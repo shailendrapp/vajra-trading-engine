@@ -1,0 +1,52 @@
+# ── Environment & Secrets ─────────────────────────────────────────
+.env
+*.env
+.env.*
+!.env.example
+
+# ── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+.eggs/
+*.egg-info/
+*.egg
+dist/
+build/
+.installed.cfg
+
+# ── Virtual Environments ──────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+.env/
+
+# ── Database & Runtime Data ───────────────────────────────────────
+data/trades.db
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# ── Logs ──────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── IDE ───────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Testing ───────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
