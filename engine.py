@@ -22,6 +22,8 @@ Usage:
   python engine.py                  # run live (paper mode)
   python engine.py --dry-run        # smoke test, no orders placed
 """
+from dotenv import load_dotenv
+load_dotenv()
 
 import argparse
 import logging
