@@ -246,7 +246,9 @@ class CommandHandler:
         cmd = text.lower().split()[0]
         logger.info("Telegram command received: %s", text)
 
-        if cmd == "/status":
+        if cmd == "/enter":
+            self._cmd_enter(text)
+        elif cmd == "/status":
             self._cmd_status()
         elif cmd == "/pause":
             pause_trading("telegram command")
@@ -261,6 +263,8 @@ class CommandHandler:
         elif cmd == "/help":
             send(
                 "📋 *Commands:*\n"
+                "/enter IC — enter Iron Condor\n"
+                "/enter IC A+ — enter IC grade A+\n"
                 "/status — open positions + P&L\n"
                 "/pause — halt new entries\n"
                 "/resume — re-enable entries\n"
@@ -269,6 +273,71 @@ class CommandHandler:
             )
         else:
             send(f"Unknown command: `{text}`\nTry /help")
+
+    def _cmd_enter(self, text: str):
+        """
+        Handle /enter IC [grade] command.
+        Examples:
+          /enter IC        → IC, grade A (default)
+          /enter IC A+     → IC, grade A+
+        """
+        import pytz
+        from core.database import get_open_spreads, get_or_create_daily_state
+        from core.tradier import get_vix
+        from modules.trade_entry import enter_trade
+
+        PT = pytz.timezone("America/Los_Angeles")
+        trade_date = __import__("datetime").datetime.now(PT).strftime("%Y-%m-%d")
+
+        # Parse command — /enter IC or /enter IC A+
+        parts = text.strip().split()
+        if len(parts) < 2:
+            send("Usage: `/enter IC` or `/enter IC A+`")
+            return
+
+        setup_type  = parts[1].upper()
+        signal_grade = parts[2].upper() if len(parts) >= 3 else "A"
+
+        if setup_type not in ("IC", "BEAR_CALL", "BULL_PUT"):
+            send(f"❌ Unknown setup: `{setup_type}` — use IC, BEAR_CALL, or BULL_PUT")
+            return
+
+        if signal_grade not in ("A+", "A"):
+            send(f"❌ Invalid grade: `{signal_grade}` — use A or A+")
+            return
+
+        if is_paused():
+            send("⏸ Trading is paused — send /resume first")
+            return
+
+        # Load daily state
+        from core.tradier import get_account_balance
+        balance = get_account_balance()
+        equity  = float(balance["total_equity"]) if balance and balance.get("total_equity") else 50000.0
+
+        daily_state       = get_or_create_daily_state(trade_date, equity)
+        open_positions    = len(get_open_spreads(trade_date))
+        vix               = get_vix() or 0.0
+
+        send(
+            f"🔍 Processing `/enter {setup_type} {signal_grade}`\n"
+            f"VIX: {vix:.1f} | Open positions: {open_positions} | Equity: ${equity:,.0f}"
+        )
+
+        # Attempt entry
+        success, msg = enter_trade(
+            setup_type          = setup_type,
+            signal_grade        = signal_grade,
+            is_news_day         = False,
+            daily_state         = daily_state,
+            account_equity      = equity,
+            total_open_positions = open_positions,
+        )
+
+        if success:
+            send(f"✅ *Trade entered!*\n{msg}")
+        else:
+            send(f"🚫 *Entry blocked:*\n{msg}")
 
     def _cmd_status(self):
         from datetime import datetime
