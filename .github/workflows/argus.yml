@@ -1,0 +1,82 @@
+name: Argus Trading Engine
+
+on:
+  schedule:
+    # 6:25 AM PT weekdays = 13:25 UTC (PST) / 14:25 UTC (PDT)
+    # Using 13:25 UTC to cover both PST and PDT with buffer
+    - cron: '25 13 * * 1-5'
+  workflow_dispatch:
+    # Manual trigger from GitHub UI — for dry-runs and testing
+    inputs:
+      dry_run:
+        description: 'Run in dry-run mode (no orders placed)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  run-argus:
+    name: Run Argus Trading Engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 420   # 7 hours max — covers full 6:25 AM–1:15 PM PT window
+
+    steps:
+      # ── 1. Checkout repo ───────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python ───────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. Install dependencies ────────────────────────────────────────
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── 4. Validate system before trading ─────────────────────────────
+      - name: Run system validation
+        env:
+          TRADIER_API_KEY:    ${{ secrets.TRADIER_API_KEY }}
+          TRADIER_ACCOUNT_ID: ${{ secrets.TRADIER_ACCOUNT_ID }}
+          FLASHALPHA_API_KEY: ${{ secrets.FLASHALPHA_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          STARTING_EQUITY:    ${{ secrets.STARTING_EQUITY }}
+        run: python tests/validate.py
+
+      # ── 5. Run the engine ──────────────────────────────────────────────
+      - name: Run Argus Engine
+        env:
+          TRADIER_API_KEY:    ${{ secrets.TRADIER_API_KEY }}
+          TRADIER_ACCOUNT_ID: ${{ secrets.TRADIER_ACCOUNT_ID }}
+          FLASHALPHA_API_KEY: ${{ secrets.FLASHALPHA_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          STARTING_EQUITY:    ${{ secrets.STARTING_EQUITY }}
+          DB_PATH:            data/trades.db
+          LOG_DIR:            logs/
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
+            echo "🔍 Running in DRY-RUN mode"
+            python engine.py --dry-run
+          else
+            echo "🚀 Running in PAPER trading mode"
+            python engine.py
+          fi
+
+      # ── 6. Upload logs and DB as artifacts (for debugging) ────────────
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: argus-logs-${{ github.run_id }}
+          path: |
+            logs/
+            data/trades.db
+          retention-days: 30
