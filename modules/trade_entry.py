@@ -321,8 +321,15 @@ def enter_trade(
         return False, f"Net credit ${net_credit:.2f} below $0.30 minimum"
 
     # ── 5. Contract sizing ────────────────────────────────────────────────────
+    # IC: always IC_CONTRACTS (3). VIX multiplier may reduce if elevated.
+    # Bear Call / Bull Put: standard account-based sizing.
+    from config import IC_CONTRACTS
+    from core.risk_manager import vix_size_multiplier
     consecutive_wins = daily_state.get("consecutive_win_days", 0)
-    contracts = calculate_contracts(account_equity, consecutive_wins, vix=vix)
+    if setup_type == "IC":
+        contracts = max(1, math.floor(IC_CONTRACTS * vix_size_multiplier(vix)))
+    else:
+        contracts = calculate_contracts(account_equity, consecutive_wins, vix=vix)
 
     # ── 6. Build order legs ───────────────────────────────────────────────────
     spread_id  = str(uuid.uuid4())

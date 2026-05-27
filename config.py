@@ -12,8 +12,8 @@ from typing import List
 TRADIER_API_KEY        = os.getenv("TRADIER_API_KEY", "")
 TRADIER_ACCOUNT_ID     = os.getenv("TRADIER_ACCOUNT_ID", "")
 TRADIER_PAPER_BASE_URL = "https://sandbox.tradier.com/v1"
-TRADIER_LIVE_BASE_URL  = "https://api.tradier.com/v1"   # reserved for future
-TRADING_MODE           = "paper"                         # "paper" only for now
+TRADIER_LIVE_BASE_URL  = "https://api.tradier.com/v1"
+TRADING_MODE           = "paper"
 
 # ─────────────────────────────────────────────
 # FLASHALPHA  (GEX-based strike selection)
@@ -21,16 +21,13 @@ TRADING_MODE           = "paper"                         # "paper" only for now
 FLASHALPHA_API_KEY      = os.getenv("FLASHALPHA_API_KEY", "")
 FLASHALPHA_BASE_URL     = "https://flashalpha.com/v1"
 FLASHALPHA_SYMBOL       = "SPX"
-FLASHALPHA_DAILY_LIMIT  = 45          # free tier = 50/day; stay under with buffer
-FLASHALPHA_CACHE_TTL    = 1800        # re-fetch GEX every 30 minutes (seconds)
+FLASHALPHA_DAILY_LIMIT  = 45
+FLASHALPHA_CACHE_TTL    = 1800
 
-# Strike selection: Option A logic
-#   1. Find positive GEX wall where delta is in range → use it
-#   2. If no wall aligns with delta range → fall back to pure delta
-GEX_WALL_MIN_SIZE       = 1_000_000  # ignore walls smaller than this notional
-GEX_DELTA_MIN           = 0.10       # short leg delta floor
-GEX_DELTA_MAX           = 0.25       # short leg delta ceiling
-GEX_WALL_DELTA_FALLBACK = True       # True = fall back to delta if no GEX wall found
+GEX_WALL_MIN_SIZE       = 1_000_000
+GEX_DELTA_MIN           = 0.10
+GEX_DELTA_MAX           = 0.25
+GEX_WALL_DELTA_FALLBACK = True
 
 # ─────────────────────────────────────────────
 # TELEGRAM
@@ -42,21 +39,25 @@ TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 # ACCOUNT & SIZING
 # ─────────────────────────────────────────────
 STARTING_ACCOUNT_EQUITY = float(os.getenv("STARTING_EQUITY", "50000"))
-RISK_PCT_PER_TRADE      = 0.01      # 1% of equity per trade
-SPREAD_WIDTH_PTS        = 10        # SPX points
+RISK_PCT_PER_TRADE      = 0.01
+SPREAD_WIDTH_PTS        = 10
 MAX_CONCURRENT_SPREADS  = 3
-SCALE_UP_AFTER_N_WINS   = 10        # consecutive profitable days before +1 contract
+SCALE_UP_AFTER_N_WINS   = 10
 
 # ─────────────────────────────────────────────
-# PROFIT TIERS  (applied to open position set)
+# IC CONTRACT STRUCTURE
 # ─────────────────────────────────────────────
-# With N open positions:
-#   50% of contracts close at TIER_1 profit
-#   25% of contracts close at TIER_2 profit
-#   25% = free runner → breach or hard close only
-PROFIT_TIER_1 = 0.50
-PROFIT_TIER_2 = 0.60
-SOLO_PROFIT_TARGET = 0.50
+# Every IC signal opens exactly 3 contracts with fixed exit rules:
+#   Contract 1 → close at 50% of credit received
+#   Contract 2 → close at 70% of credit received
+#   Contract 3 → free runner (breach or hard close only)
+#
+# Applies to Iron Condor only.
+# Bear Call / Bull Put use standard single-contract sizing.
+IC_CONTRACTS            = 3          # always 3 for IC
+IC_CONTRACT_1_TARGET    = 0.50       # 50% profit
+IC_CONTRACT_2_TARGET    = 0.70       # 70% profit
+# Contract 3 = free runner, no profit target
 
 # ─────────────────────────────────────────────
 # BREACH / STOP RULES
@@ -82,10 +83,13 @@ NEWS_DAY_SYMBOLS         = ["FOMC", "CPI", "NFP", "PCE", "JOLTS"]
 # ─────────────────────────────────────────────
 # VIX-BASED POSITION SIZING  (backtest validated)
 # ─────────────────────────────────────────────
-#   VIX < 20   → 100%   (88–92% win rate zone)
-#   VIX 20–25  →  50%   (75% win rate zone)
-#   VIX 25–30  →  25%   (47% win rate zone)
-#   VIX >= 30  →   0%   (kill switch)
+#   VIX < 20   → 100%  (88–92% win rate zone)
+#   VIX 20–25  →  50%  (75% win rate zone)
+#   VIX 25–30  →  25%  (47% win rate zone)
+#   VIX >= 30  →   0%  (kill switch)
+#
+# Note: IC always opens IC_CONTRACTS=3. The VIX multiplier
+# reduces this: VIX 20-25 → 2 contracts, VIX 25-30 → 1 contract.
 VIX_SIZE_TIERS = [
     (20.0, 1.00),
     (25.0, 0.50),
@@ -109,7 +113,7 @@ MARKET_CLOSE_PT          = "13:15"
 # REPORTING
 # ─────────────────────────────────────────────
 DAILY_SUMMARY_TIME_PT    = "13:05"
-WEEKLY_SUMMARY_DAY       = 4        # Friday (0=Monday)
+WEEKLY_SUMMARY_DAY       = 4
 
 # ─────────────────────────────────────────────
 # DATABASE
