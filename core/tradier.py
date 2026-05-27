@@ -44,7 +44,13 @@ def _post(endpoint: str, data: dict, retries: int = 3) -> Optional[dict]:
     for attempt in range(retries):
         try:
             r = requests.post(url, headers=HEADERS, data=data, timeout=10)
-            r.raise_for_status()
+            if not r.ok:
+                # Log the full response body so we can see exactly what Tradier rejects
+                logger.warning("Tradier POST %s attempt %d failed: %s for url: %s | body: %s",
+                               endpoint, attempt + 1, r.status_code, url, r.text[:800])
+                if attempt < retries - 1:
+                    time.sleep(1.5 ** attempt)
+                continue
             return r.json()
         except requests.RequestException as e:
             logger.warning("Tradier POST %s attempt %d failed: %s", endpoint, attempt + 1, e)
@@ -261,12 +267,31 @@ def place_spread_order(
         data[f"side[{i}]"]          = leg["side"]
         data[f"quantity[{i}]"]      = str(leg["quantity"])
 
+    # Log what we're sending so we can debug format issues
+    logger.info("Tradier order payload: %s", data)
     response = _post(f"/accounts/{TRADIER_ACCOUNT_ID}/orders", data)
     if not response:
         return None
 
     try:
+        # Log full response so we can see any errors from Tradier
+        logger.info("Tradier order response: %s", response)
+
+        # Check for error response
+        if "errors" in response:
+            errors = response["errors"]
+            logger.error("Tradier order error: %s", errors)
+            return None
+
+        if "fault" in response:
+            logger.error("Tradier fault: %s", response["fault"])
+            return None
+
         order = response.get("order", {})
+        if not order:
+            logger.error("No order object in response: %s", response)
+            return None
+
         logger.info("Order placed: id=%s status=%s", order.get("id"), order.get("status"))
         return order
     except (KeyError, TypeError) as e:
