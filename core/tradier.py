@@ -254,7 +254,7 @@ def place_spread_order(
 
     data = {
         "class":    "multileg",
-        "symbol":   "$SPX.X",
+        "symbol":   "SPX",
         "type":     order_type,
         "duration": duration,
     }
