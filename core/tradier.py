@@ -135,32 +135,65 @@ def get_vix() -> Optional[float]:
 
 
 def get_spx_price() -> Optional[float]:
-    """Fetch current SPX spot price."""
-    data = _get("/markets/quotes", params={"symbols": "$SPX.X"})
-    if not data:
-        return None
-    try:
-        quote = data["quotes"]["quote"]
-        return float(quote.get("last") or quote.get("close") or 0)
-    except (KeyError, TypeError):
-        return None
+    """
+    Fetch current SPX spot price.
+    Tries multiple symbol formats — sandbox and live use different ones.
+    """
+    # Symbol formats to try in order
+    symbols = ["$SPX.X", "SPX", ".SPX", "SPXW"]
+    for sym in symbols:
+        data = _get("/markets/quotes", params={"symbols": sym})
+        if not data:
+            continue
+        try:
+            quote = data["quotes"]["quote"]
+            if isinstance(quote, list):
+                quote = quote[0]
+            price = float(quote.get("last") or quote.get("close") or
+                          quote.get("prevclose") or 0)
+            if price > 0:
+                logger.info("SPX price fetched via symbol %s: %.2f", sym, price)
+                return price
+        except (KeyError, TypeError, IndexError):
+            continue
+
+    # Final fallback — use SPY × 10 as approximation
+    data = _get("/markets/quotes", params={"symbols": "SPY"})
+    if data:
+        try:
+            quote = data["quotes"]["quote"]
+            spy = float(quote.get("last") or quote.get("close") or 0)
+            if spy > 0:
+                spx = round(spy * 10, 2)
+                logger.warning("SPX not available — using SPY×10 approximation: %.2f", spx)
+                return spx
+        except (KeyError, TypeError):
+            pass
+
+    logger.error("Could not fetch SPX price from any source")
+    return None
 
 
 def get_option_chain(expiry: str, option_type: str = "all") -> List[Dict]:
     """
     Get full option chain for SPX on a given expiry.
+    Tries $SPX.X first (live), then SPXW (sandbox/0DTE).
     expiry: YYYY-MM-DD
     option_type: 'call' | 'put' | 'all'
     """
-    params = {
-        "symbol":       "$SPX.X",
-        "expiration":   expiry,
-        "greeks":       "true",
-    }
-    if option_type != "all":
-        params["optionType"] = option_type
+    for sym in ["$SPX.X", "SPXW", "SPX"]:
+        params = {
+            "symbol":     sym,
+            "expiration": expiry,
+            "greeks":     "true",
+        }
+        if option_type != "all":
+            params["optionType"] = option_type
 
-    data = _get("/markets/options/chains", params=params)
+        data = _get("/markets/options/chains", params=params)
+        if data and data.get("options"):
+            logger.info("Option chain fetched via symbol %s", sym)
+            break
     if not data:
         return []
     try:
