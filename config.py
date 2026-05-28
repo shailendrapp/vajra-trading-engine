@@ -30,6 +30,11 @@ GEX_DELTA_MAX           = 0.25
 GEX_WALL_DELTA_FALLBACK = True
 
 # ─────────────────────────────────────────────
+# ANTHROPIC  (Claude verdict for BIC alerts)
+# ─────────────────────────────────────────────
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# ─────────────────────────────────────────────
 # TELEGRAM
 # ─────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -120,3 +125,35 @@ WEEKLY_SUMMARY_DAY       = 4
 # ─────────────────────────────────────────────
 DB_PATH = os.getenv("DB_PATH", "data/trades.db")
 LOG_DIR = os.getenv("LOG_DIR",  "logs/")
+
+# ─────────────────────────────────────────────
+# BIC SCANNER  (Breakeven Iron Condor)
+# ─────────────────────────────────────────────
+# Dynamic wing width based on VIX (backtest validated)
+#   VIX < 20  → 25pt wings  (94.3% win rate)
+#   VIX 20-25 → 30pt wings  (98.7% win rate)
+#   VIX 25-30 → 35pt wings  (98.8% win rate)
+BIC_WING_TIERS = [
+    (20.0, 25),
+    (25.0, 30),
+    (30.0, 35),
+]
+
+BIC_SHORT_DELTA_TARGET = 0.09   # target delta for short legs
+BIC_SHORT_DELTA_MIN    = 0.06   # minimum acceptable delta
+BIC_SHORT_DELTA_MAX    = 0.12   # maximum acceptable delta
+BIC_MIN_CREDIT         = 0.50   # minimum $0.50 credit per IC ($50/contract)
+BIC_VIX_FLOOR          = 12.0   # skip if VIX < 12 (credit too thin)
+
+# BIC scan schedule — entry windows (ET)
+# System scans at these times and auto-enters if conditions met
+BIC_ENTRY_WINDOWS_ET = [
+    "10:15",   # Window 1 — post open-range
+    "11:15",   # Window 2
+    "12:15",   # Window 3 — best theta window
+    "13:15",   # Window 4
+    "14:15",   # Window 5 — final entry (leaves 75min before 12:30 PT close)
+]
+
+# News events to skip (checked against economic calendar)
+BIC_NEWS_EVENTS = ["FOMC", "CPI", "NFP", "PCE", "JOLTS", "FOMC_MINUTES"]

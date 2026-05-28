@@ -190,6 +190,82 @@ def send_weekly_summary(equity_start: float, equity_end: float) -> None:
 # COMMAND HANDLER  (polls Telegram for /commands)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MONTHLY SUMMARY
+# ─────────────────────────────────────────────────────────────────────────────
+
+def send_monthly_summary(equity: float) -> None:
+    from datetime import date, timedelta
+    today     = datetime.now(PT).date()
+    # First day of current month
+    first_day = today.replace(day=1).strftime("%Y-%m-%d")
+    last_day  = today.strftime("%Y-%m-%d")
+
+    trades    = get_weekly_trades(first_day, last_day)
+    total     = len(trades)
+    winners   = [t for t in trades if (t.get("realized_pnl") or 0) > 0]
+    gross_pnl = sum(t.get("realized_pnl") or 0 for t in trades)
+    win_rate  = (len(winners) / total * 100) if total else 0
+    avg_credit= sum(t.get("credit_received") or 0 for t in trades) / total if total else 0
+
+    month_name = datetime.now(PT).strftime("%B %Y")
+
+    msg = (
+        f"📅 <b>Monthly Summary — {month_name}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Trades:      {total} | {len(winners)}W / {total-len(winners)}L\n"
+        f"Win Rate:    {win_rate:.0f}%\n"
+        f"Net P&L:     ${gross_pnl:+,.2f}\n"
+        f"Avg Credit:  ${avg_credit:.2f}\n"
+        f"Account:     ${equity:,.0f}"
+    )
+    send(msg)
+    logger.info("Monthly summary sent for %s", month_name)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# YEARLY SUMMARY
+# ─────────────────────────────────────────────────────────────────────────────
+
+def send_yearly_summary(equity_start: float, equity_end: float) -> None:
+    year      = datetime.now(PT).year
+    first_day = f"{year}-01-01"
+    last_day  = datetime.now(PT).strftime("%Y-%m-%d")
+
+    trades    = get_weekly_trades(first_day, last_day)
+    total     = len(trades)
+    winners   = [t for t in trades if (t.get("realized_pnl") or 0) > 0]
+    gross_pnl = sum(t.get("realized_pnl") or 0 for t in trades)
+    win_rate  = (len(winners) / total * 100) if total else 0
+    growth    = ((equity_end - equity_start) / equity_start * 100) if equity_start else 0
+
+    # Monthly breakdown
+    from collections import defaultdict
+    monthly: dict = defaultdict(float)
+    for t in trades:
+        m = t.get("trade_date", "")[:7]  # YYYY-MM
+        monthly[m] += t.get("realized_pnl") or 0
+
+    monthly_rows = "\n".join(
+        f"  {m}: ${v:+,.0f}"
+        for m, v in sorted(monthly.items())
+    ) or "  No data"
+
+    msg = (
+        f"📆 <b>Yearly Summary — {year}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Trades:      {total} | {len(winners)}W / {total-len(winners)}L\n"
+        f"Win Rate:    {win_rate:.0f}%\n"
+        f"Net P&L:     ${gross_pnl:+,.2f}\n"
+        f"Growth:      {growth:+.1f}%\n"
+        f"Equity:      ${equity_start:,.0f} → ${equity_end:,.0f}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>Monthly Breakdown:</b>\n{monthly_rows}"
+    )
+    send(msg)
+    logger.info("Yearly summary sent for %s", year)
+
+
 class CommandHandler:
     """
     Polls Telegram getUpdates every 5s and dispatches commands.

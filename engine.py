@@ -22,8 +22,6 @@ Usage:
   python engine.py                  # run live (paper mode)
   python engine.py --dry-run        # smoke test, no orders placed
 """
-from dotenv import load_dotenv
-load_dotenv()
 
 import argparse
 import logging
@@ -43,6 +41,7 @@ from config import (
 from core.database import init_db, get_or_create_daily_state, update_daily_state
 from core.tradier import get_account_balance, get_vix
 from modules.position_monitor import monitor_tick
+from modules.bic_scanner import run_bic_scan
 from modules.telegram_bot import (
     send, send_daily_summary, send_weekly_summary,
     CommandHandler, is_paused, pause_trading
@@ -104,8 +103,12 @@ class Engine:
     def __init__(self, dry_run: bool = False):
         self.dry_run          = dry_run
         self._running         = False
-        self._daily_summary_sent  = False
-        self._weekly_summary_sent = False
+        self._daily_summary_sent   = False
+        self._weekly_summary_sent  = False
+        self._monthly_summary_sent = False
+        self._yearly_summary_sent  = False
+        self._bic_windows_fired: set = set()   # track which BIC windows fired today
+        self._bic_entry_count: int = 0          # entries taken today
         self.account_equity   = STARTING_ACCOUNT_EQUITY
         self.daily_state: dict = {}
         self.news_days: set   = set()
@@ -186,10 +189,51 @@ class Engine:
         trade_date = _today()
         is_news_day = trade_date in self.news_days
 
+        # ── BIC scan windows ─────────────────────────────────────────────────
+        from config import BIC_ENTRY_WINDOWS_ET
+        import pytz
+        now_et_hhmm = datetime.now(pytz.timezone("America/New_York")).strftime("%H:%M")
+        for window_et in BIC_ENTRY_WINDOWS_ET:
+            if now_et_hhmm >= window_et and window_et not in self._bic_windows_fired:
+                self._bic_windows_fired.add(window_et)
+                if not self.dry_run and not is_paused():
+                    self._bic_entry_count += 1
+                    logger.info("BIC window %s ET fired — running scan #%d",
+                                window_et, self._bic_entry_count)
+                    result = run_bic_scan(
+                        entry_num      = self._bic_entry_count,
+                        daily_state    = self.daily_state,
+                        account_equity = self.account_equity,
+                        is_news_day    = trade_date in self.news_days,
+                    )
+                    if result.get("status") == "entered":
+                        logger.info("BIC #%d entered: order=%s credit=%.2f",
+                                    self._bic_entry_count,
+                                    result.get("order_id"),
+                                    result.get("credit", 0))
+                else:
+                    logger.info("[DRY RUN / PAUSED] BIC window %s ET skipped", window_et)
+
         # ── Daily summary ─────────────────────────────────────────────────────
         if now_hhmm >= DAILY_SUMMARY_TIME_PT and not self._daily_summary_sent:
             self._send_eod_summary(trade_date)
             self._daily_summary_sent = True
+
+        # ── Monthly summary (last trading day of month) ──────────────────────
+        import calendar
+        now_dt2  = _now_pt()
+        last_day = calendar.monthrange(now_dt2.year, now_dt2.month)[1]
+        if now_dt2.day == last_day and now_hhmm >= DAILY_SUMMARY_TIME_PT and not self._monthly_summary_sent:
+            from modules.telegram_bot import send_monthly_summary
+            send_monthly_summary(self.account_equity)
+            self._monthly_summary_sent = True
+
+        # ── Yearly summary (Dec 31) ────────────────────────────────────────────
+        now_dt3 = _now_pt()
+        if now_dt3.month == 12 and now_dt3.day == 31 and now_hhmm >= DAILY_SUMMARY_TIME_PT and not self._yearly_summary_sent:
+            from modules.telegram_bot import send_yearly_summary
+            send_yearly_summary(STARTING_ACCOUNT_EQUITY, self.account_equity)
+            self._yearly_summary_sent = True
 
         # ── Weekly summary (Friday) ───────────────────────────────────────────
         now_dt = _now_pt()
