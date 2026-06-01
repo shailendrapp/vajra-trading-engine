@@ -15,9 +15,16 @@ os.makedirs('data', exist_ok=True)
 os.makedirs('logs', exist_ok=True)
 
 from dotenv import load_dotenv
-# Load .env file but don't override existing environment variables
-# (GitHub Actions injects secrets as env vars directly)
+# CRITICAL: load_dotenv BEFORE any other imports
+# config.py reads os.getenv() at import time — must set env vars first
+# override=False means GitHub Actions secrets take priority over .env
 load_dotenv(dotenv_path='.env', override=False)
+
+# Verify key env vars are visible before config import
+_missing = [k for k in ['TRADIER_API_KEY','TELEGRAM_BOT_TOKEN','ANTHROPIC_API_KEY']
+            if not os.environ.get(k)]
+if _missing:
+    pass  # will be caught by individual checks below
 
 _db = os.path.join('data', 'trades.db')
 if os.path.exists(_db):
@@ -72,10 +79,11 @@ check("BIC delta target = 0.09",       BIC_SHORT_DELTA_TARGET == 0.09)
 check("BIC min credit = $0.50",        BIC_MIN_CREDIT == 0.50)
 check("BIC wing tiers defined",        len(BIC_WING_TIERS) == 3)
 check("BIC entry windows defined",     len(BIC_ENTRY_WINDOWS_ET) == 5)
-check("TRADIER_API_KEY set",           len(TRADIER_API_KEY) > 0,    "add to .env")
-check("FLASHALPHA_API_KEY set",        len(FLASHALPHA_API_KEY) > 0, "add to .env")
-check("TELEGRAM_BOT_TOKEN set",        len(TELEGRAM_BOT_TOKEN) > 0, "add to .env")
-check("ANTHROPIC_API_KEY set",         len(ANTHROPIC_API_KEY) > 0,  "add to .env")
+# Check env vars directly from os.environ (not config) to catch GitHub Actions secrets
+check("TRADIER_API_KEY set",           len(os.environ.get("TRADIER_API_KEY","")) > 0,    "add to .env or GitHub Secrets")
+check("FLASHALPHA_API_KEY set",        len(os.environ.get("FLASHALPHA_API_KEY","")) > 0, "add to .env or GitHub Secrets")
+check("TELEGRAM_BOT_TOKEN set",        len(os.environ.get("TELEGRAM_BOT_TOKEN","")) > 0, "add to .env or GitHub Secrets")
+check("ANTHROPIC_API_KEY set",         len(os.environ.get("ANTHROPIC_API_KEY","")) > 0,  "add to .env or GitHub Secrets")
 
 print("\n\u2500\u2500 2. Database \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
 from core.database import (
@@ -271,8 +279,10 @@ check("Yearly summary scheduled",     "send_yearly_summary" in src)
 
 total = passed + failed
 env_miss = sum([
-    len(TRADIER_API_KEY)==0, len(FLASHALPHA_API_KEY)==0,
-    len(TELEGRAM_BOT_TOKEN)==0, len(ANTHROPIC_API_KEY)==0,
+    len(os.environ.get("TRADIER_API_KEY",""))==0,
+    len(os.environ.get("FLASHALPHA_API_KEY",""))==0,
+    len(os.environ.get("TELEGRAM_BOT_TOKEN",""))==0,
+    len(os.environ.get("ANTHROPIC_API_KEY",""))==0,
 ])
 logic_fail = failed - env_miss
 print()
