@@ -3,10 +3,8 @@ name: Argus Trading Engine
 on:
   schedule:
     # 6:25 AM PT weekdays = 13:25 UTC (PST) / 14:25 UTC (PDT)
-    # Using 13:25 UTC to cover both PST and PDT with buffer
     - cron: '25 13 * * 1-5'
   workflow_dispatch:
-    # Manual trigger from GitHub UI — for dry-runs and testing
     inputs:
       dry_run:
         description: 'Run in dry-run mode (no orders placed)'
@@ -21,7 +19,7 @@ jobs:
   run-argus:
     name: Run Argus Trading Engine
     runs-on: ubuntu-latest
-    timeout-minutes: 420   # 7 hours max — covers full 6:25 AM–1:15 PM PT window
+    timeout-minutes: 420   # 7 hours max
 
     steps:
       # ── 1. Checkout repo ───────────────────────────────────────────────
@@ -39,7 +37,63 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── 4. Validate system before trading ─────────────────────────────
+      # ── 4. Restore DB from previous run ───────────────────────────────
+      # This carries open positions, daily state, and trade history
+      # across GitHub Actions runs so the position monitor can
+      # close positions opened in previous sessions.
+      - name: Restore database from previous run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const artifacts = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'argus-db',
+              per_page: 5
+            });
+
+            if (artifacts.data.artifacts.length === 0) {
+              console.log('No previous DB artifact found — starting fresh');
+              return;
+            }
+
+            // Get most recent artifact
+            const latest = artifacts.data.artifacts
+              .filter(a => !a.expired)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+
+            if (!latest) {
+              console.log('No valid DB artifact found — starting fresh');
+              return;
+            }
+
+            console.log(`Restoring DB from artifact: ${latest.name} (${latest.created_at})`);
+
+            const download = await github.rest.actions.downloadArtifact({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              artifact_id: latest.id,
+              archive_format: 'zip'
+            });
+
+            const fs = require('fs');
+            const path = require('path');
+            fs.mkdirSync('data', { recursive: true });
+            fs.writeFileSync('/tmp/db-artifact.zip', Buffer.from(download.data));
+            console.log('DB artifact downloaded — will be extracted by next step');
+
+      - name: Extract restored database
+        run: |
+          mkdir -p data logs
+          if [ -f /tmp/db-artifact.zip ]; then
+            cd data && unzip -o /tmp/db-artifact.zip && cd ..
+            echo "✅ Database restored from previous run"
+            ls -la data/
+          else
+            echo "ℹ️  No previous database — starting fresh"
+          fi
+
+      # ── 5. Validate system before trading ─────────────────────────────
       - name: Run system validation
         env:
           TRADIER_API_KEY:    ${{ secrets.TRADIER_API_KEY }}
@@ -48,9 +102,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           STARTING_EQUITY:    ${{ secrets.STARTING_EQUITY }}
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
         run: python tests/validate.py
 
-      # ── 5. Run the engine ──────────────────────────────────────────────
+      # ── 6. Run the engine ──────────────────────────────────────────────
       - name: Run Argus Engine
         env:
           TRADIER_API_KEY:    ${{ secrets.TRADIER_API_KEY }}
@@ -59,6 +114,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           STARTING_EQUITY:    ${{ secrets.STARTING_EQUITY }}
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
           DB_PATH:            data/trades.db
           LOG_DIR:            logs/
         run: |
@@ -70,13 +126,22 @@ jobs:
             python engine.py
           fi
 
-      # ── 6. Upload logs and DB as artifacts (for debugging) ────────────
+      # ── 7. Save DB artifact for next run ──────────────────────────────
+      # Always save DB even if engine crashed — preserves open positions
+      - name: Save database for next run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: argus-db
+          path: data/trades.db
+          retention-days: 7
+          overwrite: true   # always keep only the latest
+
+      # ── 8. Upload full logs for debugging ─────────────────────────────
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: argus-logs-${{ github.run_id }}
-          path: |
-            logs/
-            data/trades.db
+          path: logs/
           retention-days: 30
