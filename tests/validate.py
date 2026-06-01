@@ -15,7 +15,9 @@ os.makedirs('data', exist_ok=True)
 os.makedirs('logs', exist_ok=True)
 
 from dotenv import load_dotenv
-load_dotenv(dotenv_path='.env')
+# Load .env file but don't override existing environment variables
+# (GitHub Actions injects secrets as env vars directly)
+load_dotenv(dotenv_path='.env', override=False)
 
 _db = os.path.join('data', 'trades.db')
 if os.path.exists(_db):
