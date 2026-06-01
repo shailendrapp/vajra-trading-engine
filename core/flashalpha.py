@@ -73,8 +73,8 @@ class FlashAlphaClient:
     @property
     def _headers(self) -> Dict[str, str]:
         return {
-            "Authorization": f"Bearer {FLASHALPHA_API_KEY}",
-            "Accept":        "application/json",
+            "X-Api-Key": FLASHALPHA_API_KEY,
+            "Accept":    "application/json",
         }
 
     def _cache_valid(self) -> bool:
@@ -178,14 +178,27 @@ class FlashAlphaClient:
             return None
 
         # ── Parse headline fields ────────────────────────────────────────────
-        call_wall  = float(levels_raw.get("call_wall")  or
-                           levels_raw.get("top_call_gamma_strike") or 0)
-        put_wall   = float(levels_raw.get("put_wall")   or
-                           levels_raw.get("top_put_gamma_strike")  or 0)
-        gamma_flip = float(levels_raw.get("gamma_flip") or
-                           levels_raw.get("gamma_flip_level")      or 0)
-        net_gex    = float(levels_raw.get("net_gex")    or
-                           levels_raw.get("gex")                   or 0)
+        # FlashAlpha returns SPY levels — multiply by 10 for SPX equivalent
+        spy_call_wall  = float(levels_raw.get("call_wall")  or
+                               levels_raw.get("top_call_gamma_strike") or 0)
+        spy_put_wall   = float(levels_raw.get("put_wall")   or
+                               levels_raw.get("top_put_gamma_strike")  or 0)
+        spy_gamma_flip = float(levels_raw.get("gamma_flip") or
+                               levels_raw.get("gamma_flip_level")      or 0)
+        net_gex        = float(levels_raw.get("net_gex")    or
+                               levels_raw.get("gex")                   or 0)
+
+        # Convert SPY → SPX (×10)
+        call_wall  = round(spy_call_wall  * 10, 0)
+        put_wall   = round(spy_put_wall   * 10, 0)
+        gamma_flip = round(spy_gamma_flip * 10, 0)
+
+        logger.info(
+            "FlashAlpha SPY→SPX conversion: "
+            "spy_call=%.2f→%.0f spy_put=%.2f→%.0f spy_flip=%.2f→%.0f",
+            spy_call_wall, call_wall, spy_put_wall, put_wall,
+            spy_gamma_flip, gamma_flip
+        )
 
         # ── Fetch per-strike GEX for detailed wall list ──────────────────────
         positive_walls: List[GEXWall] = []
@@ -195,7 +208,7 @@ class FlashAlphaClient:
         if strikes_raw:
             strike_list = strikes_raw.get("strikes") or []
             for row in strike_list:
-                k        = float(row.get("strike", 0))
+                k        = float(row.get("strike", 0)) * 10  # SPY→SPX conversion
                 net      = float(row.get("net_gex", 0))
                 call_gex = float(row.get("call_gex", 0))
                 put_gex  = float(row.get("put_gex", 0))
