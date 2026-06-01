@@ -11,7 +11,7 @@ Free tier: 50 req/day — Argus caches for 30 min to stay well within limits.
 Rate usage: ~8–12 calls/day assuming 2 entries per session.
 
 API reference (from prior integration in 0dte-spx-alerts repo):
-  GET /v1/exposure/levels/{symbol}  → call_wall, put_wall, gamma_flip, net_gex
+  GET /v1/exposure/gex/{symbol}?expiration=YYYY-MM-DD  → call_wall, put_wall, gamma_flip, net_gex
   GET /v1/exposure/gex/{symbol}     → per-strike GEX notional data
 """
 
@@ -127,11 +127,11 @@ class FlashAlphaClient:
 
     def get_levels(self, symbol: str = None) -> Optional[dict]:
         """
-        GET /v1/exposure/levels/{symbol}
+        GET /v1/exposure/gex/{symbol}
         Returns: call_wall, put_wall, gamma_flip, net_gex
         """
         sym = symbol or FLASHALPHA_SYMBOL
-        return self._get(f"/exposure/levels/{sym}")
+        return self._get(f"/exposure/gex/{sym}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # SECONDARY: get_gex_strikes — per-strike breakdown
