@@ -19,8 +19,9 @@ TRADING_MODE           = "paper"
 # FLASHALPHA  (GEX-based strike selection)
 # ─────────────────────────────────────────────
 FLASHALPHA_API_KEY      = os.getenv("FLASHALPHA_API_KEY", "")
-FLASHALPHA_BASE_URL     = "https://flashalpha.com/v1"
-FLASHALPHA_SYMBOL       = "SPX"
+FLASHALPHA_BASE_URL     = "https://lab.flashalpha.com/v1"
+# FlashAlpha uses SPY (ETF). Argus converts SPY levels × 10 → SPX
+FLASHALPHA_SYMBOL       = "SPY"
 FLASHALPHA_DAILY_LIMIT  = 45
 FLASHALPHA_CACHE_TTL    = 1800
 
