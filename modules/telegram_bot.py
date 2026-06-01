@@ -48,25 +48,33 @@ def resume_trading():
 # SEND
 # ─────────────────────────────────────────────────────────────────────────────
 
-def send(text: str, parse_mode: str = "Markdown") -> bool:
+def send(text: str, parse_mode: str = "HTML") -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.debug("Telegram not configured — message suppressed: %s", text[:80])
         return False
-    try:
-        r = requests.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json={
-                "chat_id":    TELEGRAM_CHAT_ID,
-                "text":       text,
-                "parse_mode": parse_mode,
-            },
-            timeout=10,
-        )
-        r.raise_for_status()
-        return True
-    except requests.RequestException as e:
-        logger.error("Telegram send failed: %s", e)
-        return False
+    # Try with parse_mode first, fall back to plain text if formatting fails
+    for mode in ([parse_mode, None] if parse_mode else [None]):
+        try:
+            payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+            if mode:
+                payload["parse_mode"] = mode
+            r = requests.post(
+                f"{TELEGRAM_API}/sendMessage",
+                json=payload,
+                timeout=10,
+            )
+            if r.ok:
+                return True
+            elif r.status_code == 400 and mode:
+                # Formatting error — retry as plain text
+                logger.warning("Telegram parse_mode=%s failed (400) — retrying as plain text", mode)
+                continue
+            else:
+                r.raise_for_status()
+        except requests.RequestException as e:
+            logger.error("Telegram send failed: %s", e)
+            return False
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
