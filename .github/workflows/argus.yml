@@ -37,60 +37,25 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── 4. Restore DB from previous run ───────────────────────────────
-      # This carries open positions, daily state, and trade history
-      # across GitHub Actions runs so the position monitor can
-      # close positions opened in previous sessions.
-      - name: Restore database from previous run
-        uses: actions/github-script@v7
+      # ── 4. Restore DB from cache ───────────────────────────────────────
+      # Uses actions/cache with a fixed key so each run overwrites
+      # the previous one. The DB carries open positions, daily state,
+      # and trade history across runs.
+      - name: Restore database
+        uses: actions/cache/restore@v4
         with:
-          script: |
-            const artifacts = await github.rest.actions.listArtifactsForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'argus-db',
-              per_page: 5
-            });
+          path: data/trades.db
+          key: argus-trades-db
+          restore-keys: argus-trades-db
 
-            if (artifacts.data.artifacts.length === 0) {
-              console.log('No previous DB artifact found — starting fresh');
-              return;
-            }
-
-            // Get most recent artifact
-            const latest = artifacts.data.artifacts
-              .filter(a => !a.expired)
-              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
-
-            if (!latest) {
-              console.log('No valid DB artifact found — starting fresh');
-              return;
-            }
-
-            console.log(`Restoring DB from artifact: ${latest.name} (${latest.created_at})`);
-
-            const download = await github.rest.actions.downloadArtifact({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              artifact_id: latest.id,
-              archive_format: 'zip'
-            });
-
-            const fs = require('fs');
-            const path = require('path');
-            fs.mkdirSync('data', { recursive: true });
-            fs.writeFileSync('/tmp/db-artifact.zip', Buffer.from(download.data));
-            console.log('DB artifact downloaded — will be extracted by next step');
-
-      - name: Extract restored database
+      - name: Prepare data directory
         run: |
           mkdir -p data logs
-          if [ -f /tmp/db-artifact.zip ]; then
-            cd data && unzip -o /tmp/db-artifact.zip && cd ..
+          if [ -f data/trades.db ]; then
             echo "✅ Database restored from previous run"
-            ls -la data/
+            ls -lh data/trades.db
           else
-            echo "ℹ️  No previous database — starting fresh"
+            echo "ℹ️  No previous database found — starting fresh"
           fi
 
       # ── 5. Validate system before trading ─────────────────────────────
@@ -126,16 +91,14 @@ jobs:
             python engine.py
           fi
 
-      # ── 7. Save DB artifact for next run ──────────────────────────────
-      # Always save DB even if engine crashed — preserves open positions
+      # ── 7. Save DB to cache for next run ──────────────────────────────
+      # Runs even if engine crashed so open positions are never lost
       - name: Save database for next run
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/cache/save@v4
         with:
-          name: argus-db
           path: data/trades.db
-          retention-days: 7
-          overwrite: true   # always keep only the latest
+          key: argus-trades-db
 
       # ── 8. Upload full logs for debugging ─────────────────────────────
       - name: Upload logs
@@ -143,5 +106,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: argus-logs-${{ github.run_id }}
-          path: logs/
+          path: |
+            logs/
+            data/trades.db
           retention-days: 30
