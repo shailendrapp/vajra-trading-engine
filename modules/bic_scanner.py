@@ -282,9 +282,12 @@ ADJUSTMENTS: [Any suggested tweaks, or "None — proceed as planned"]"""
             timeout=15,
         )
         if r.ok:
-            return r.json()["content"][0]["text"].strip()
+            data = r.json()
+            if data.get("content") and len(data["content"]) > 0:
+                return data["content"][0]["text"].strip()
+            logger.warning("Claude verdict empty response: %s", data)
         else:
-            logger.warning("Claude verdict failed: %s", r.status_code)
+            logger.warning("Claude verdict failed: %s %s", r.status_code, r.text[:200])
     except Exception as e:
         logger.warning("Claude verdict error: %s", e)
 
@@ -432,10 +435,15 @@ def run_bic_scan(
     allowed, reason = bic_entry_allowed(vix, is_news_day, daily_state, account_equity)
     if not allowed:
         logger.info("BIC blocked: %s", reason)
-        send(format_bic_alert(
-            entry_num, spx, vix, {}, 0, "", "—", None,
-            blocked_reason=reason
-        ))
+        now_pt = _now_pt()
+        now_et = _now_et()
+        time_str = f"{now_pt.strftime('%H:%M')} PT / {now_et.strftime('%H:%M')} ET"
+        send(
+            f"⛔ <b>BIC SKIP #{entry_num}</b>  —  {time_str}\n"
+            f"SPX {spx:.2f}  |  VIX {vix:.1f}\n"
+            f"Reason: {reason}\n"
+            f"<i>Next window in ~60 min</i>"
+        )
         return {"status": "blocked", "reason": reason}
 
     # ── Wing width + expiry ───────────────────────────────────────────────
