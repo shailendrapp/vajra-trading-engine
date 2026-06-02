@@ -531,8 +531,9 @@ def run_bic_scan(
         send(msg); logger.error(msg)
         return {"status": "error", "reason": "no_chain"}
 
-    # Initialize summary to None — will be fetched after chain
+    # Initialize to None — assigned below
     summary = None
+    strikes = None
 
     # ── Strike selection via FlashAlpha anchors ───────────────────────────
     # Use GEX walls + expected move to anchor strikes, then find nearest
