@@ -102,8 +102,8 @@ def _find_strike_gex_first(
         delta_abs = abs(nearest.get("delta", 0))
         if GEX_DELTA_MIN <= delta_abs <= GEX_DELTA_MAX:
             logger.info(
-                "GEX wall strike selected: %.0f (wall=%.0f delta=%.2f net_gex=%.0f)",
-                nearest["strike"], wall.strike, delta_abs, wall.net_gex
+                "GEX wall strike selected: %.0f (wall=%.0f delta=%.2f size=%.0f)",
+                nearest["strike"], wall.strike, delta_abs, wall.size
             )
             return nearest, "GEX"
 
