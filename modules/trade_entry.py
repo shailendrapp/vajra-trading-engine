@@ -29,7 +29,7 @@ from core.tradier import get_option_chain, place_spread_order, get_spx_price, ge
 from core.risk_manager import (
     check_entry_gates, calculate_contracts, EntryGateResult
 )
-from core.flashalpha import get_client as get_gex_client, GEXLevels, GEXWall
+from core.flashalpha import get_client as get_gex_client, GEXWall
 from modules.position_monitor import assign_tiers
 
 logger = logging.getLogger(__name__)
