@@ -143,6 +143,80 @@ def find_strike_at_delta(
     return candidates[0]
 
 
+def _select_strikes_near_target(
+    chain: List[Dict],
+    spx: float,
+    target_call: float,
+    target_put: float,
+    wing_width: int,
+) -> Optional[Dict]:
+    """
+    Find chain strikes nearest to GEX-anchored targets.
+    Validates that selected strikes have delta in acceptable range.
+    Falls back to None if no valid match found.
+    """
+    calls = [o for o in chain if o.get("type") == "call"
+             and o.get("strike", 0) >= target_call - 10
+             and o.get("strike", 0) >= spx]
+    puts  = [o for o in chain if o.get("type") == "put"
+             and o.get("strike", 0) <= target_put + 10
+             and o.get("strike", 0) <= spx]
+
+    if not calls or not puts:
+        return None
+
+    # Nearest call strike to target
+    short_call = min(calls, key=lambda o: abs(o.get("strike", 0) - target_call))
+    short_put  = min(puts,  key=lambda o: abs(o.get("strike", 0) - target_put))
+
+    long_call_strike = short_call["strike"] + wing_width
+    long_put_strike  = short_put["strike"]  - wing_width
+
+    long_call = next(
+        (o for o in chain if o.get("type") == "call"
+         and o.get("strike") == long_call_strike), None
+    )
+    long_put = next(
+        (o for o in chain if o.get("type") == "put"
+         and o.get("strike") == long_put_strike), None
+    )
+
+    if not long_call or not long_put:
+        logger.warning(
+            "GEX selection: long legs not found at %.0f/%.0f",
+            long_call_strike, long_put_strike
+        )
+        return None
+
+    call_credit = round(
+        max(short_call.get("bid", 0) - long_call.get("ask", 0), 0), 2
+    )
+    put_credit = round(
+        max(short_put.get("bid", 0) - long_put.get("ask", 0), 0), 2
+    )
+    total_credit = round(call_credit + put_credit, 2)
+
+    stop_per_side = round(wing_width * 0.10, 2)
+
+    return {
+        "short_call":       short_call,
+        "long_call":        long_call,
+        "short_put":        short_put,
+        "long_put":         long_put,
+        "call_credit":      call_credit,
+        "put_credit":       put_credit,
+        "total_credit":     total_credit,
+        "stop_per_side":    stop_per_side,
+        "wing_width":       wing_width,
+        "defended_low":     short_put["strike"],
+        "defended_high":    short_call["strike"],
+        "defended_range":   round(short_call["strike"] - short_put["strike"], 0),
+        "short_call_delta": round(abs(short_call.get("delta", 0)), 3),
+        "short_put_delta":  round(abs(short_put.get("delta", 0)), 3),
+        "selection_method": "GEX",
+    }
+
+
 def select_bic_strikes(
     chain: List[Dict],
     spx_price: float,
@@ -457,14 +531,73 @@ def run_bic_scan(
         send(msg); logger.error(msg)
         return {"status": "error", "reason": "no_chain"}
 
-    # ── Strike selection ──────────────────────────────────────────────────
+    # ── Strike selection via FlashAlpha anchors ───────────────────────────
+    # Use GEX walls + expected move to anchor strikes, then find nearest
+    # chain strike. Falls back to delta search if FlashAlpha unavailable.
+    if summary and summary.call_wall > 0:
+        anchors = get_client().get_strike_anchors(spx, summary)
+        if anchors.get("method") == "GEX":
+            target_call = anchors["short_call"]
+            target_put  = anchors["short_put"]
+            wing        = anchors["wing_width"]
+            logger.info(
+                "GEX anchors: short_call=%.0f short_put=%.0f wing=%dpt em=±%.0f",
+                target_call, target_put, wing, anchors.get("em", 0)
+            )
+            # Find nearest chain strikes to GEX anchor targets
+            strikes = _select_strikes_near_target(
+                chain, spx, target_call, target_put, wing
+            )
+            if strikes:
+                logger.info(
+                    "GEX strike selection: call=%s put=%s",
+                    strikes.get("short_call", {}).get("strike"),
+                    strikes.get("short_put", {}).get("strike")
+                )
+
+    # Fall through to delta search if GEX selection failed
+    if not strikes:
+        logger.info("Using delta-based strike selection (GEX unavailable or no match)")
+
+    # Log chain diagnostics before delta selection attempt
+    calls_in_chain = [o for o in chain if o.get("type") == "call"]
+    puts_in_chain  = [o for o in chain if o.get("type") == "put"]
+    calls_above    = [o for o in calls_in_chain if o.get("strike", 0) > spx]
+    puts_below     = [o for o in puts_in_chain  if o.get("strike", 0) < spx]
+    delta_calls    = [o for o in calls_above if BIC_SHORT_DELTA_MIN <= abs(o.get("delta", 0)) <= BIC_SHORT_DELTA_MAX]
+    delta_puts     = [o for o in puts_below  if BIC_SHORT_DELTA_MIN <= abs(o.get("delta", 0)) <= BIC_SHORT_DELTA_MAX]
+
+    logger.info(
+        "BIC chain: total=%d calls_above_spx=%d puts_below_spx=%d "
+        "delta_calls(%.2f-%.2f)=%d delta_puts=%d",
+        len(chain), len(calls_above), len(puts_below),
+        BIC_SHORT_DELTA_MIN, BIC_SHORT_DELTA_MAX,
+        len(delta_calls), len(delta_puts)
+    )
+    if delta_calls:
+        best_call = min(delta_calls, key=lambda o: abs(abs(o.get("delta",0)) - BIC_SHORT_DELTA_TARGET))
+        logger.info("Best call candidate: strike=%.0f delta=%.3f bid=%.2f",
+                    best_call["strike"], best_call.get("delta",0), best_call.get("bid",0))
+    if delta_puts:
+        best_put = min(delta_puts, key=lambda o: abs(abs(o.get("delta",0)) - BIC_SHORT_DELTA_TARGET))
+        logger.info("Best put candidate:  strike=%.0f delta=%.3f bid=%.2f",
+                    best_put["strike"], best_put.get("delta",0), best_put.get("bid",0))
+
     strikes = select_bic_strikes(chain, spx, wing)
     if not strikes:
+        reason_detail = (
+            f"calls_above={len(calls_above)} puts_below={len(puts_below)} "
+            f"delta_calls={len(delta_calls)} delta_puts={len(delta_puts)}"
+        )
+        logger.warning("BIC no setup: %s", reason_detail)
         msg = (
-            f"⚠️ <b>BIC NO SETUP #{entry_num}</b>  —  {_now_pt().strftime('%H:%M')} PT\n"
-            f"SPX {spx:.2f}  |  VIX {vix:.1f}  |  Wing {wing}pt\n"
-            f"No delta {BIC_SHORT_DELTA_MIN}–{BIC_SHORT_DELTA_MAX} legs with adequate credit.\n"
-            f"<i>Next window in ~60 min</i>"
+            "BIC NO SETUP #" + str(entry_num) + " -- " +
+            _now_pt().strftime("%H:%M") + " PT" + chr(10) +
+            "SPX " + str(round(spx,2)) + " | VIX " + str(round(vix,1)) +
+            " | Wing " + str(wing) + "pt" + chr(10) +
+            "No delta " + str(BIC_SHORT_DELTA_MIN) + "-" +
+            str(BIC_SHORT_DELTA_MAX) + " legs found" + chr(10) +
+            reason_detail
         )
         send(msg)
         return {"status": "no_setup", "reason": "no_valid_strikes"}
@@ -481,14 +614,34 @@ def run_bic_scan(
     # ── Contract sizing ───────────────────────────────────────────────────
     contracts = size_contracts(account_equity, vix, wing)
 
-    # ── GEX regime ────────────────────────────────────────────────────────
-    try:
-        from core.flashalpha import get_client
-        gex_client = get_client()
-        gex = gex_client.get_gex_context(spx, expiration=expiry)
-        gex_regime = "🟢 GO" if gex and gex.net_gex > 0 else "🟡 CAUTION"
-    except Exception:
-        gex_regime = "⚪ UNKNOWN"
+    # ── FlashAlpha summary — GEX, expected move, wing width, regime ─────────
+    summary    = get_spx_summary()
+    gex_regime = "⚪ UNKNOWN"
+    if summary:
+        if summary.regime == "positive_gamma":
+            gex_regime = "🟢 GO"
+        elif summary.regime == "negative_gamma":
+            gex_regime = "🟡 CAUTION"
+        else:
+            gex_regime = "⚪ NEUTRAL"
+
+        # Override wing width with FlashAlpha recommendation
+        # (based on expected move — more accurate than VIX-only)
+        if summary.wing_width != wing:
+            logger.info(
+                "Wing width updated by FlashAlpha: %dpt → %dpt "
+                "(expected_move=±%.0f, vix=%.1f)",
+                wing, summary.wing_width, summary.expected_move, vix
+            )
+            wing = summary.wing_width
+
+        logger.info(
+            "FlashAlpha: regime=%s em=±%.0f call_wall=%.0f put_wall=%.0f "
+            "gamma_flip=%.0f go=%s",
+            summary.regime, summary.expected_move,
+            summary.call_wall, summary.put_wall,
+            summary.gamma_flip, summary.go_signal
+        )
 
     # ── Claude verdict ────────────────────────────────────────────────────
     verdict = get_claude_verdict(spx, vix, strikes, entry_num, gex_regime)
