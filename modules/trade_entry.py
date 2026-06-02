@@ -151,7 +151,7 @@ def select_ic_strikes(
     spx_price: float,
     chain_calls: List[Dict],
     chain_puts: List[Dict],
-    gex: Optional[GEXLevels],
+    gex: Optional["SPXSummary"],
 ) -> Optional[Dict]:
     """Select Iron Condor strikes using Option A logic on both sides."""
     walls_above = [w for w in (gex.positive_walls if gex else [])
@@ -193,7 +193,7 @@ def select_ic_strikes(
 def select_bear_call_strikes(
     spx_price: float,
     chain_calls: List[Dict],
-    gex: Optional[GEXLevels],
+    gex: Optional["SPXSummary"],
 ) -> Optional[Dict]:
     walls_above = [w for w in (gex.positive_walls if gex else [])
                    if w.strike > spx_price]
@@ -213,7 +213,7 @@ def select_bear_call_strikes(
 def select_bull_put_strikes(
     spx_price: float,
     chain_puts: List[Dict],
-    gex: Optional[GEXLevels],
+    gex: Optional["SPXSummary"],
 ) -> Optional[Dict]:
     walls_below = [w for w in (gex.positive_walls if gex else [])
                    if w.strike < spx_price]
