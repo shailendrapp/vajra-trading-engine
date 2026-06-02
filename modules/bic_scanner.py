@@ -48,6 +48,7 @@ from core.risk_manager import (
 )
 from modules.position_monitor import assign_tiers
 from modules.telegram_bot import send
+from core.flashalpha import get_client, get_spx_summary, GEXWall
 
 logger = logging.getLogger(__name__)
 ET = pytz.timezone("America/New_York")
@@ -531,9 +532,13 @@ def run_bic_scan(
         send(msg); logger.error(msg)
         return {"status": "error", "reason": "no_chain"}
 
-    # Initialize to None — assigned below
-    summary = None
-    strikes = None
+    # Initialize all local variables to None to prevent UnboundLocalError
+    summary    = None
+    strikes    = None
+    anchors    = None
+    verdict    = None
+    order      = None
+    order_id   = None
 
     # ── Strike selection via FlashAlpha anchors ───────────────────────────
     # Use GEX walls + expected move to anchor strikes, then find nearest
