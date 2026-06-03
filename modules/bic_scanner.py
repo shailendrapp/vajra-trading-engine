@@ -620,9 +620,6 @@ def run_bic_scan(
         send(msg)
         return {"status": "blocked", "reason": "low_credit"}
 
-    # ── Contract sizing ───────────────────────────────────────────────────
-    contracts = size_contracts(account_equity, vix, wing)
-
     # ── FlashAlpha summary — GEX, expected move, wing width, regime ─────────
     summary    = get_spx_summary()
     gex_regime = "⚪ UNKNOWN"
@@ -635,7 +632,6 @@ def run_bic_scan(
             gex_regime = "⚪ NEUTRAL"
 
         # Override wing width with FlashAlpha recommendation
-        # (based on expected move — more accurate than VIX-only)
         if summary.wing_width != wing:
             logger.info(
                 "Wing width updated by FlashAlpha: %dpt → %dpt "
@@ -651,6 +647,76 @@ def run_bic_scan(
             summary.call_wall, summary.put_wall,
             summary.gamma_flip, summary.go_signal
         )
+
+    # ── Regime-based contract sizing ─────────────────────────────────────────
+    # positive_gamma → full entry
+    # negative_gamma + VIX < 18 → cautious (1 contract, wider wings)
+    # negative_gamma + VIX ≥ 18 → skip
+    #
+    # Backtest basis: negative_gamma days have 81% win rate (vs 95%+ positive)
+    # Sizing down protects capital while keeping the strategy active on mild days
+    if summary and summary.regime == "negative_gamma":
+        if vix < 18.0:
+            # Enter cautiously — 1 contract, 45pt wings minimum
+            contracts   = 1
+            wing        = max(wing, 45)
+            gex_regime  = "🟡 CAUTION (1c)"
+            logger.info(
+                "Negative gamma + VIX %.1f < 18 — reduced to 1c, wing=%dpt",
+                vix, wing
+            )
+        else:
+            # VIX ≥ 18 in negative gamma = too risky, skip
+            reason = (
+                "negative_gamma + VIX %.1f >= 18 — skipping "
+                "(dealers amplify moves, elevated volatility)" % vix
+            )
+            logger.info("BIC blocked: %s", reason)
+            now_pt = _now_pt(); now_et = _now_et()
+            time_str = now_pt.strftime("%H:%M") + " PT / " + now_et.strftime("%H:%M") + " ET"
+            send(
+                "⛔ BIC SKIP #" + str(entry_num) + "  --  " + time_str + chr(10) +
+                "SPX " + str(round(spx, 2)) + "  |  VIX " + str(round(vix, 1)) + chr(10) +
+                "Reason: " + reason
+            )
+            return {"status": "blocked", "reason": "negative_gamma_high_vix"}
+    else:
+        contracts = size_contracts(account_equity, vix, wing)
+
+    # ── Expected move validation ──────────────────────────────────────────────
+    # Short strikes must be at least 80% of expected move away from SPX
+    # Prevents entering ICs where strikes are inside the expected move
+    if summary and summary.expected_move > 0 and strikes:
+        min_distance  = summary.expected_move * 0.80
+        short_call_k  = strikes["short_call"]["strike"]
+        short_put_k   = strikes["short_put"]["strike"]
+        call_distance = short_call_k - spx
+        put_distance  = spx - short_put_k
+
+        if call_distance < min_distance or put_distance < min_distance:
+            reason = (
+                "Strike inside expected move: "
+                "call %.0f (%.0fpts, min %.0fpts) "
+                "put %.0f (%.0fpts, min %.0fpts)" % (
+                    short_call_k, call_distance, min_distance,
+                    short_put_k,  put_distance,  min_distance
+                )
+            )
+            logger.warning("BIC blocked: %s", reason)
+            now_pt = _now_pt(); now_et = _now_et()
+            time_str = now_pt.strftime("%H:%M") + " PT / " + now_et.strftime("%H:%M") + " ET"
+            send(
+                "⛔ BIC SKIP #" + str(entry_num) + "  --  " + time_str + chr(10) +
+                "SPX " + str(round(spx, 2)) + "  |  EM +-" + str(round(summary.expected_move, 0)) + chr(10) +
+                "Reason: " + reason
+            )
+            return {"status": "blocked", "reason": "strike_inside_em"}
+        else:
+            logger.info(
+                "EM validation passed: call %.0fpts OTM (min %.0f) "
+                "put %.0fpts OTM (min %.0f)",
+                call_distance, min_distance, put_distance, min_distance
+            )
 
     # ── Claude verdict ────────────────────────────────────────────────────
     verdict = get_claude_verdict(spx, vix, strikes, entry_num, gex_regime)
