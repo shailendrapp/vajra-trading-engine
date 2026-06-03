@@ -139,7 +139,21 @@ def _execute_close(spread: Dict, legs: List[Dict], contracts: int,
             "side":     side,
             "quantity": contracts,
         })
-    order = place_close_order(close_legs, order_type="market")
+
+    # Use limit order at debit price to avoid Tradier sandbox rejections
+    # on low-value close orders. Add 10% buffer for fills.
+    # Minimum debit of $0.10 to ensure order is accepted.
+    limit_price = max(round(close_debit * 1.10, 2), 0.10) if close_debit > 0 else None
+    order_type  = "debit" if limit_price else "market"
+
+    order = place_close_order(close_legs, order_type=order_type,
+                              limit_price=limit_price)
+
+    # Retry with market order if limit rejected
+    if not (order and order.get("id")):
+        logger.warning("CLOSE limit order failed — retrying as market order")
+        order = place_close_order(close_legs, order_type="market")
+
     if order and order.get("id"):
         logger.info("CLOSE: spread=%s contracts=%d reason=%s debit=%.2f order=%s",
                     spread["id"][:8], contracts, close_reason, close_debit, order["id"])
