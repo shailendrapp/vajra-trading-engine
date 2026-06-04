@@ -15,6 +15,12 @@ on:
           - 'true'
           - 'false'
 
+# Prevent duplicate runs — if a new run starts while one is in progress,
+# cancel the NEW one (keep the existing trading session alive)
+concurrency:
+  group: argus-trading-engine
+  cancel-in-progress: false
+
 jobs:
   run-argus:
     name: Run Argus Trading Engine
