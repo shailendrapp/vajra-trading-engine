@@ -32,6 +32,7 @@ from config import (
     BIC_WING_TIERS, BIC_SHORT_DELTA_TARGET, BIC_SHORT_DELTA_MIN,
     BIC_SHORT_DELTA_MAX, BIC_MIN_CREDIT, BIC_VIX_FLOOR,
     BIC_ENTRY_WINDOWS_ET, BIC_NEWS_EVENTS,
+    BIC_ADAPTIVE_DELTA,
     VIX_KILL_SWITCH, IC_CONTRACTS, SPREAD_WIDTH_PTS,
     ANTHROPIC_API_KEY,
 )
@@ -121,19 +122,39 @@ def bic_entry_allowed(
 # STRIKE SELECTION — BIC DELTA METHOD
 # ─────────────────────────────────────────────────────────────────────────────
 
+def adaptive_delta_target(atm_iv: float) -> float:
+    """
+    Returns delta target based on ATM IV level.
+    Lower IV → lower delta → strikes go further OTM → safer.
+    Higher IV → higher delta → more premium available.
+
+    BIC_ADAPTIVE_DELTA tiers (from config):
+      atm_iv < 0.11 → 0.05  (very low IV, very far OTM)
+      atm_iv < 0.13 → 0.06  (low IV)
+      atm_iv < 0.16 → 0.09  (normal — standard BIC)
+      atm_iv ≥ 0.16 → 0.12  (high IV)
+    """
+    for iv_threshold, delta in BIC_ADAPTIVE_DELTA:
+        if atm_iv < iv_threshold:
+            return delta
+    return BIC_SHORT_DELTA_TARGET
+
+
 def find_strike_at_delta(
     chain: List[Dict],
     option_type: str,
     target_delta: float = BIC_SHORT_DELTA_TARGET,
+    delta_min: float = BIC_SHORT_DELTA_MIN,
+    delta_max: float = BIC_SHORT_DELTA_MAX,
 ) -> Optional[Dict]:
     """
-    Find the option in the chain where abs(delta) is closest to target_delta
-    and within [BIC_SHORT_DELTA_MIN, BIC_SHORT_DELTA_MAX].
+    Find the option in the chain where abs(delta) is closest to target_delta.
+    Accepts custom delta_min/max to support adaptive delta ranges.
     """
     candidates = [
         o for o in chain
         if o.get("type") == option_type
-        and BIC_SHORT_DELTA_MIN <= abs(o.get("delta", 0)) <= BIC_SHORT_DELTA_MAX
+        and delta_min <= abs(o.get("delta", 0)) <= delta_max
         and o.get("bid", 0) > 0.05
     ]
 
@@ -222,6 +243,9 @@ def select_bic_strikes(
     chain: List[Dict],
     spx_price: float,
     wing_width: int,
+    target_delta: float = BIC_SHORT_DELTA_TARGET,
+    delta_min: float = BIC_SHORT_DELTA_MIN,
+    delta_max: float = BIC_SHORT_DELTA_MAX,
 ) -> Optional[Dict]:
     """
     Select BIC strikes:
@@ -235,8 +259,14 @@ def select_bic_strikes(
     calls = [o for o in chain if o.get("type") == "call" and o.get("strike", 0) > spx_price]
     puts  = [o for o in chain if o.get("type") == "put"  and o.get("strike", 0) < spx_price]
 
-    short_call = find_strike_at_delta(calls, "call")
-    short_put  = find_strike_at_delta(puts,  "put")
+    short_call = find_strike_at_delta(calls, "call",
+                                      target_delta=target_delta,
+                                      delta_min=delta_min,
+                                      delta_max=delta_max)
+    short_put  = find_strike_at_delta(puts,  "put",
+                                      target_delta=target_delta,
+                                      delta_min=delta_min,
+                                      delta_max=delta_max)
 
     if not short_call or not short_put:
         logger.warning("BIC: could not find valid short legs at delta %.2f", BIC_SHORT_DELTA_TARGET)
@@ -592,7 +622,12 @@ def run_bic_scan(
         logger.info("Best put candidate:  strike=%.0f delta=%.3f bid=%.2f",
                     best_put["strike"], best_put.get("delta",0), best_put.get("bid",0))
 
-    strikes = select_bic_strikes(chain, spx, wing)
+    strikes = select_bic_strikes(
+        chain, spx, wing,
+        target_delta=delta_target,
+        delta_min=delta_min,
+        delta_max=delta_max
+    )
     if not strikes:
         reason_detail = (
             f"calls_above={len(calls_above)} puts_below={len(puts_below)} "
@@ -647,6 +682,32 @@ def run_bic_scan(
             summary.call_wall, summary.put_wall,
             summary.gamma_flip, summary.go_signal
         )
+
+        # VVIX spike alert — warn but don't block (preserves trades)
+        # VVIX > 100 = elevated vol-of-vol = potential spike day
+        vvix = getattr(summary, 'vvix', None)
+        if vvix and vvix > 100:
+            logger.warning(
+                "VVIX %.1f > 100 — elevated spike risk (alert only, not blocking)",
+                vvix
+            )
+            # Flag in gex_regime for Claude verdict context
+            gex_regime += " ⚠️VVIX%.0f" % vvix
+
+    # ── Adaptive delta target ─────────────────────────────────────────────
+    # Use ATM IV from FlashAlpha to determine optimal delta target
+    # Lower IV → lower delta → further OTM → safer strikes
+    if summary:
+        atm_iv = summary.atm_iv
+    else:
+        atm_iv = vix / 100
+    delta_target = adaptive_delta_target(atm_iv)
+    delta_min    = max(0.03, delta_target - 0.03)
+    delta_max    = min(0.15, delta_target + 0.04)
+    logger.info(
+        "Adaptive delta: atm_iv=%.1f%% → target=%.2f range=[%.2f, %.2f]",
+        atm_iv * 100, delta_target, delta_min, delta_max
+    )
 
     # ── Regime-based contract sizing ─────────────────────────────────────────
     # positive_gamma → full entry
