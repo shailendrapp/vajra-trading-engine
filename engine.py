@@ -139,11 +139,12 @@ class Engine:
 
         self.daily_state = get_or_create_daily_state(trade_date, self.account_equity)
 
+        mode_str = "DRY RUN" if self.dry_run else "PAPER"
         send(
-            f"🚀 *SPX 0DTE Engine online*\n"
-            f"Date: {trade_date} | Mode: PAPER\n"
-            f"Equity: ${self.account_equity:,.0f}\n"
-            f"{'⚠️ DRY RUN — no orders placed' if self.dry_run else '✅ Ready to trade'}"
+            "🚀 <b>SPX 0DTE Engine online</b>" + chr(10) +
+            "Date: " + trade_date + " | Mode: " + mode_str + chr(10) +
+            "Equity: $" + "{:,.0f}".format(self.account_equity) + chr(10) +
+            ("⚠️ DRY RUN — no orders placed" if self.dry_run else "✅ Ready to trade")
         )
 
         # Start Telegram command listener
