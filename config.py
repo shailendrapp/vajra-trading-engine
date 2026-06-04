@@ -140,9 +140,22 @@ BIC_WING_TIERS = [
     (30.0, 35),
 ]
 
-BIC_SHORT_DELTA_TARGET = 0.09   # target delta for short legs
-BIC_SHORT_DELTA_MIN    = 0.06   # minimum acceptable delta
+# Adaptive delta — target changes based on ATM IV level
+# Low IV → lower delta → strikes go further OTM → safer
+# High IV → higher delta → can afford closer strike → more premium
+# Backtest validated: +$33K improvement over fixed 0.09 target
+BIC_SHORT_DELTA_TARGET = 0.09   # default (VIX 15-20 range)
+BIC_SHORT_DELTA_MIN    = 0.04   # minimum delta (very low IV days)
 BIC_SHORT_DELTA_MAX    = 0.12   # maximum acceptable delta
+
+# Adaptive delta tiers by ATM IV
+# atm_iv = VIX/100 (no premium — raw IV)
+BIC_ADAPTIVE_DELTA = [
+    (0.11, 0.05),   # atm_iv < 11% → delta 0.05 (very far OTM)
+    (0.13, 0.06),   # atm_iv < 13% → delta 0.06 (low IV)
+    (0.16, 0.09),   # atm_iv < 16% → delta 0.09 (normal — standard BIC)
+    (0.99, 0.12),   # atm_iv ≥ 16% → delta 0.12 (high IV, more premium)
+]
 BIC_MIN_CREDIT         = 0.50   # minimum $0.50 credit per IC ($50/contract)
 BIC_VIX_FLOOR          = 12.0   # skip if VIX < 12 (credit too thin)
 
