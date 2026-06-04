@@ -55,6 +55,7 @@ class SPXSummary:
     expected_move:  float    # 1-day 1-sigma move in SPX points
     wing_width:     int      # recommended wing width from expected move
     go_signal:      bool     # True if regime favors IC trading
+    vvix:           float = 0.0   # VIX of VIX — >100 = elevated spike risk
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -147,18 +148,21 @@ class FlashAlphaClient:
                 expected_move = expected_move,
                 wing_width    = wing_width,
                 go_signal     = go_signal,
+                vvix          = vvix_val,
             )
 
             self._cache      = summary
             self._cache_time = now
 
+            vvix_val = float(data.get("macro",{}).get("vvix",{}).get("value",0) or 0)
+
             logger.info(
                 "FlashAlpha SPX: price=%.2f iv=%.1f%% vix=%.1f "
                 "flip=%.0f call_wall=%.0f put_wall=%.0f "
-                "em=±%.0f wing=%dpt regime=%s go=%s",
+                "em=±%.0f wing=%dpt regime=%s go=%s vvix=%.0f",
                 spx_price, atm_iv*100, vix,
                 gamma_flip, call_wall, put_wall,
-                expected_move, wing_width, regime, go_signal
+                expected_move, wing_width, regime, go_signal, vvix_val
             )
             return summary
 
