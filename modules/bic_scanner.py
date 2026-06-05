@@ -562,13 +562,16 @@ def run_bic_scan(
         send(msg); logger.error(msg)
         return {"status": "error", "reason": "no_chain"}
 
-    # Initialize all local variables to None to prevent UnboundLocalError
-    summary    = None
-    strikes    = None
-    anchors    = None
-    verdict    = None
-    order      = None
-    order_id   = None
+    # Initialize all local variables to prevent UnboundLocalError
+    summary      = None
+    strikes      = None
+    anchors      = None
+    verdict      = None
+    order        = None
+    order_id     = None
+    delta_target = BIC_SHORT_DELTA_TARGET
+    delta_min    = BIC_SHORT_DELTA_MIN
+    delta_max    = BIC_SHORT_DELTA_MAX
 
     # ── Strike selection via FlashAlpha anchors ───────────────────────────
     # Use GEX walls + expected move to anchor strikes, then find nearest
