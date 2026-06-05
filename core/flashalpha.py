@@ -154,7 +154,11 @@ class FlashAlphaClient:
             self._cache      = summary
             self._cache_time = now
 
-            vvix_val = float(data.get("macro",{}).get("vvix",{}).get("value",0) or 0)
+            vvix_val = 0.0  # default
+            try:
+                vvix_val = float(data.get("macro",{}).get("vvix",{}).get("value",0) or 0)
+            except (TypeError, ValueError):
+                vvix_val = 0.0
 
             logger.info(
                 "FlashAlpha SPX: price=%.2f iv=%.1f%% vix=%.1f "
