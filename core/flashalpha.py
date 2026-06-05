@@ -136,6 +136,15 @@ class FlashAlphaClient:
             # GO signal: positive gamma + net GEX positive = ideal IC conditions
             go_signal  = regime == "positive_gamma" and net_gex > 0
 
+            # VVIX — extract before SPXSummary constructor
+            vvix_val = 0.0
+            try:
+                vvix_val = float(
+                    data.get("macro", {}).get("vvix", {}).get("value", 0) or 0
+                )
+            except (TypeError, ValueError):
+                vvix_val = 0.0
+
             summary = SPXSummary(
                 spx_price     = spx_price,
                 atm_iv        = atm_iv,
@@ -154,10 +163,9 @@ class FlashAlphaClient:
             self._cache      = summary
             self._cache_time = now
 
-            vvix_val = 0.0  # default
-            try:
-                vvix_val = float(data.get("macro",{}).get("vvix",{}).get("value",0) or 0)
-            except (TypeError, ValueError):
+            # (vvix_val already extracted above)
+            # except block placeholder:
+            if False:
                 vvix_val = 0.0
 
             logger.info(
