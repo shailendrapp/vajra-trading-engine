@@ -214,7 +214,9 @@ def get_option_chain(expiry: str, option_type: str = "all") -> List[Dict]:
             result = []
             for o in options:
                 greeks = o.get("greeks") or {}
-                mid    = round((o.get("bid", 0) + o.get("ask", 0)) / 2, 2)
+                bid    = float(o.get("bid") or 0)
+                ask    = float(o.get("ask") or 0)
+                mid    = round((bid + ask) / 2, 2)
                 result.append({
                     "symbol":  o.get("symbol"),
                     "strike":  float(o.get("strike", 0)),
