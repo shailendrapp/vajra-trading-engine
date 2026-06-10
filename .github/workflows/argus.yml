@@ -1,52 +1,52 @@
-name: Argus Trading Engine
+name: Vajra Trading Engine
 
 on:
   schedule:
-    # 6:25 AM PT weekdays = 13:25 UTC (PST) / 14:25 UTC (PDT)
+    # Startup: 6:25 AM PT (13:25 UTC)
     - cron: '25 13 * * 1-5'
+    # BIC Window 1: 10:15 AM ET = 7:15 AM PT (14:15 UTC)
+    - cron: '15 14 * * 1-5'
+    # BIC Window 2: 11:15 AM ET = 8:15 AM PT (15:15 UTC)
+    - cron: '15 15 * * 1-5'
+    # BIC Window 3: 12:15 PM ET = 9:15 AM PT (16:15 UTC)
+    - cron: '15 16 * * 1-5'
+    # EOD Close: 2:30 PM ET = 11:30 AM PT (18:30 UTC)
+    - cron: '30 18 * * 1-5'
+
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: 'Run in dry-run mode (no orders placed)'
+      mode:
+        description: 'Run mode'
         required: false
-        default: 'false'
+        default: 'bic_scan'
         type: choice
         options:
-          - 'true'
-          - 'false'
+          - startup
+          - bic_scan
+          - eod_close
+          - dry_run
 
-# Prevent duplicate runs — if a new run starts while one is in progress,
-# cancel the NEW one (keep the existing trading session alive)
 concurrency:
-  group: argus-trading-engine
+  group: vajra-trading-engine
   cancel-in-progress: false
 
 jobs:
-  run-argus:
-    name: Run Argus Trading Engine
+  run-vajra:
+    name: Vajra - ${{ github.event.schedule || github.event.inputs.mode || 'manual' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 420   # 7 hours max
+    timeout-minutes: 15    # ← Hard cap: kills runaway jobs
 
     steps:
-      # ── 1. Checkout repo ───────────────────────────────────────────────
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # ── 2. Set up Python ───────────────────────────────────────────────
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      # ── 3. Install dependencies ────────────────────────────────────────
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── 4. Restore DB from cache ───────────────────────────────────────
-      # Uses actions/cache with a fixed key so each run overwrites
-      # the previous one. The DB carries open positions, daily state,
-      # and trade history across runs.
       - name: Restore database
         uses: actions/cache/restore@v4
         with:
@@ -54,30 +54,26 @@ jobs:
           key: argus-trades-db
           restore-keys: argus-trades-db
 
-      - name: Prepare data directory
+      - name: Prepare directories
+        run: mkdir -p data logs
+
+      - name: Determine run mode
+        id: mode
         run: |
-          mkdir -p data logs
-          if [ -f data/trades.db ]; then
-            echo "✅ Database restored from previous run"
-            ls -lh data/trades.db
+          SCHEDULE="${{ github.event.schedule }}"
+          INPUT_MODE="${{ github.event.inputs.mode }}"
+          
+          if [ -n "$INPUT_MODE" ]; then
+            echo "mode=$INPUT_MODE" >> $GITHUB_OUTPUT
+          elif [ "$SCHEDULE" = "25 13 * * 1-5" ]; then
+            echo "mode=startup" >> $GITHUB_OUTPUT
+          elif [ "$SCHEDULE" = "30 18 * * 1-5" ]; then
+            echo "mode=eod_close" >> $GITHUB_OUTPUT
           else
-            echo "ℹ️  No previous database found — starting fresh"
+            echo "mode=bic_scan" >> $GITHUB_OUTPUT
           fi
 
-      # ── 5. Validate system before trading ─────────────────────────────
-      - name: Run system validation
-        env:
-          TRADIER_API_KEY:    ${{ secrets.TRADIER_API_KEY }}
-          TRADIER_ACCOUNT_ID: ${{ secrets.TRADIER_ACCOUNT_ID }}
-          FLASHALPHA_API_KEY: ${{ secrets.FLASHALPHA_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-          STARTING_EQUITY:    ${{ secrets.STARTING_EQUITY }}
-          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python tests/validate.py
-
-      # ── 6. Run the engine ──────────────────────────────────────────────
-      - name: Run Argus Engine
+      - name: Run Engine
         env:
           TRADIER_API_KEY:    ${{ secrets.TRADIER_API_KEY }}
           TRADIER_ACCOUNT_ID: ${{ secrets.TRADIER_ACCOUNT_ID }}
@@ -88,31 +84,20 @@ jobs:
           ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
           DB_PATH:            data/trades.db
           LOG_DIR:            logs/
-        run: |
-          if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
-            echo "🔍 Running in DRY-RUN mode"
-            python engine.py --dry-run
-          else
-            echo "🚀 Running in PAPER trading mode"
-            python engine.py
-          fi
+          RUN_MODE:           ${{ steps.mode.outputs.mode }}
+        run: python engine.py --mode ${{ steps.mode.outputs.mode }}
 
-      # ── 7. Save DB to cache for next run ──────────────────────────────
-      # Runs even if engine crashed so open positions are never lost
-      - name: Save database for next run
+      - name: Save database
         if: always()
         uses: actions/cache/save@v4
         with:
           path: data/trades.db
           key: argus-trades-db
 
-      # ── 8. Upload full logs for debugging ─────────────────────────────
       - name: Upload logs
-        if: always()
+        if: failure()    # ← Only upload on failure, saves storage
         uses: actions/upload-artifact@v4
         with:
-          name: argus-logs-${{ github.run_id }}
-          path: |
-            logs/
-            data/trades.db
-          retention-days: 30
+          name: vajra-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 7    # ← Reduced from 30
