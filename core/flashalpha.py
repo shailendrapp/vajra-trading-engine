@@ -62,6 +62,12 @@ class SPXSummary:
 # CLIENT
 # ─────────────────────────────────────────────────────────────────────────────
 
+DISK_CACHE_PATH    = "data/flashalpha_cache.json"
+DISK_CACHE_TTL     = 3300   # 55 min disk cache — one call per 60-min BIC window
+MIN_FORCE_INTERVAL = 600    # 10 min minimum between forced refreshes
+                             # prevents burst when all windows fire simultaneously
+
+
 class FlashAlphaClient:
 
     def __init__(self):
@@ -71,11 +77,71 @@ class FlashAlphaClient:
         }
         self._cache:      Optional[SPXSummary] = None
         self._cache_time: float = 0
-        self._cache_ttl:  int   = 1800   # 30 min cache
+        self._cache_ttl:  int   = 1800   # in-memory 30 min cache
+        self._load_disk_cache()          # restore from previous run if fresh
 
     def calls_remaining(self) -> int:
         """Compatibility shim for validate.py."""
         return 45
+
+    def _load_disk_cache(self):
+        """Load cached FlashAlpha response from disk if still fresh."""
+        import json, os
+        try:
+            if not os.path.exists(DISK_CACHE_PATH):
+                return
+            with open(DISK_CACHE_PATH, "r") as f:
+                data = json.load(f)
+            age = time.time() - data.get("saved_at", 0)
+            if age > DISK_CACHE_TTL:
+                logger.debug("Disk cache expired (%.0f min old)", age/60)
+                return
+            # Reconstruct SPXSummary from cached dict
+            s = data["summary"]
+            self._cache = SPXSummary(
+                spx_price=s["spx_price"], atm_iv=s["atm_iv"],
+                vix=s["vix"], gamma_flip=s["gamma_flip"],
+                call_wall=s["call_wall"], put_wall=s["put_wall"],
+                net_gex=s["net_gex"], regime=s["regime"],
+                expected_move=s["expected_move"], wing_width=s["wing_width"],
+                go_signal=s["go_signal"], vvix=s.get("vvix", 0.0)
+            )
+            self._cache_time = data["saved_at"]
+            logger.info(
+                "FlashAlpha: restored from disk cache (%.0f min old) "
+                "regime=%s em=±%.0f",
+                age/60, self._cache.regime, self._cache.expected_move
+            )
+        except Exception as e:
+            logger.debug("Disk cache load failed: %s", e)
+
+    def _save_disk_cache(self, summary: "SPXSummary"):
+        """Save FlashAlpha response to disk for use by next run."""
+        import json, os
+        try:
+            os.makedirs("data", exist_ok=True)
+            data = {
+                "saved_at": time.time(),
+                "summary": {
+                    "spx_price":    summary.spx_price,
+                    "atm_iv":       summary.atm_iv,
+                    "vix":          summary.vix,
+                    "gamma_flip":   summary.gamma_flip,
+                    "call_wall":    summary.call_wall,
+                    "put_wall":     summary.put_wall,
+                    "net_gex":      summary.net_gex,
+                    "regime":       summary.regime,
+                    "expected_move":summary.expected_move,
+                    "wing_width":   summary.wing_width,
+                    "go_signal":    summary.go_signal,
+                    "vvix":         summary.vvix,
+                }
+            }
+            with open(DISK_CACHE_PATH, "w") as f:
+                json.dump(data, f)
+            logger.debug("FlashAlpha: saved to disk cache")
+        except Exception as e:
+            logger.warning("Disk cache save failed: %s", e)
 
     def _get(self, endpoint: str, params: dict = None) -> Optional[dict]:
         url = f"{FLASHALPHA_BASE_URL}{endpoint}"
@@ -97,16 +163,68 @@ class FlashAlphaClient:
                 time.sleep(2)
         return None
 
+    def _is_cache_from_today_session(self) -> bool:
+        """
+        Returns True if cached data is from the current trading session
+        (after 9:00 AM ET today). Prevents stale overnight data being
+        used for intraday decisions.
+        """
+        if not self._cache_time:
+            return False
+        try:
+            import datetime
+            import pytz
+            ET = pytz.timezone("America/New_York")
+            now_et   = datetime.datetime.now(ET)
+            cache_et = datetime.datetime.fromtimestamp(self._cache_time, ET)
+            # Session starts at 9:00 AM ET
+            session_start = now_et.replace(hour=9, minute=0, second=0, microsecond=0)
+            return cache_et >= session_start
+        except Exception:
+            return False
+
     def get_spx_summary(self, force: bool = False) -> Optional[SPXSummary]:
         """
         Fetch full SPX summary from FlashAlpha.
-        Cached for 30 minutes to avoid redundant calls.
-        Returns SPXSummary with all BIC-relevant fields.
+
+        force=True: called once per BIC window (10:15, 11:15, 12:15, 1:15, 2:15 ET)
+                    to ensure GEX walls are fresh for each entry decision.
+                    Subject to MIN_FORCE_INTERVAL (10 min) to prevent burst
+                    when all windows fire simultaneously on a late start.
+
+        force=False: used by position monitor (every 45s) — uses cached data
+                     from most recent BIC window scan.
+
+        5 BIC windows × 1 forced call each = 5 calls/day = free tier limit exactly.
         """
         now = time.time()
-        if not force and self._cache and (now - self._cache_time) < self._cache_ttl:
-            logger.debug("FlashAlpha: using cached summary")
-            return self._cache
+
+        # If force=True but last fetch was < MIN_FORCE_INTERVAL ago,
+        # downgrade to cache — prevents burst on simultaneous window fires
+        if force and self._cache and (now - self._cache_time) < MIN_FORCE_INTERVAL:
+            logger.debug(
+                "FlashAlpha: force refresh skipped — last fetch %.0f min ago (min=%.0f)",
+                (now - self._cache_time) / 60, MIN_FORCE_INTERVAL / 60
+            )
+            force = False
+
+        # For non-forced requests: use cache if fresh AND from today's session
+        if not force and self._cache and self._is_cache_from_today_session():
+            age = now - self._cache_time
+            if age < self._cache_ttl:
+                logger.debug(
+                    "FlashAlpha: using cached summary (%.0f min old)", age / 60
+                )
+                return self._cache
+
+        # Cache is stale, from yesterday, or force=True — fetch fresh
+        if self._cache and not force:
+            if not self._is_cache_from_today_session():
+                logger.info(
+                    "FlashAlpha: disk cache is from previous session — fetching fresh"
+                )
+            else:
+                logger.debug("FlashAlpha: cache expired — fetching fresh")
 
         data = self._get(SUMMARY_ENDPOINT)
         if not data:
@@ -162,6 +280,7 @@ class FlashAlphaClient:
 
             self._cache      = summary
             self._cache_time = now
+            self._save_disk_cache(summary)   # persist for next run
 
             # (vvix_val already extracted above)
             # except block placeholder:
