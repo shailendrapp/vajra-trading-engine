@@ -1,42 +1,45 @@
 """
 engine.py — SPX 0DTE Paper Trading Engine
 ==========================================
-Supports two run modes:
+Main orchestrator. Runs a persistent process from 6:30 AM to 1:15 PM PT.
 
-  CRON MODE (short-lived, one phase per invocation — recommended):
-    python engine.py --mode startup     # 6:25 AM PT  — init DB, morning brief
-    python engine.py --mode bic_scan   # 10:15, 11:15, 12:15 ET — scan + entry
-    python engine.py --mode eod_close  # 2:30 PM ET  — close all + summaries
+Lifecycle:
+  1. Startup: init DB, load daily state, send "Engine online" message
+  2. Pre-market (until 9:30 AM ET): load VIX, check news calendar
+  3. Market hours: 45s poll loop — monitor positions + accept entry signals
+  4. Hard close (12:30 PM PT): close all open positions
+  5. EOD (1:05 PM PT): send daily summary
+  6. Friday EOD: send weekly summary
+  7. Shutdown: 1:15 PM PT
 
-  LEGACY (single persistent process — local testing only):
-    python engine.py --dry-run
+Trade entry is triggered via Telegram command:
+  /enter IC        — Iron Condor, grade A
+  /enter IC A+     — Iron Condor, grade A+
+  /enter BEAR_CALL — Bear Call Spread
+  /enter BULL_PUT  — Bull Put Spread
 
-GitHub Actions workflow calls --mode, keeping each job under 5 minutes.
+Usage:
+  python engine.py                  # run live (paper mode)
+  python engine.py --dry-run        # smoke test, no orders placed
 """
 
 import argparse
-import calendar
 import logging
 import signal
 import sys
 import time
+import threading
 from datetime import datetime
 from pathlib import Path
-
 import pytz
 
 from config import (
-    POLL_INTERVAL_SECONDS, MARKET_CLOSE_PT,
+    POLL_INTERVAL_SECONDS, MARKET_OPEN_PT, MARKET_CLOSE_PT,
     DAILY_SUMMARY_TIME_PT, WEEKLY_SUMMARY_DAY, STARTING_ACCOUNT_EQUITY,
-    LOG_DIR, BIC_ENTRY_WINDOWS_ET
+    NEWS_DAY_SYMBOLS, LOG_DIR
 )
-from core.database import (
-    init_db, get_or_create_daily_state, update_daily_state,
-    get_open_spreads, get_legs_for_spread, close_spread,
-    get_daily_trades, insert_weekly_summary
-)
+from core.database import init_db, get_or_create_daily_state, update_daily_state
 from core.tradier import get_account_balance, get_vix
-from core.risk_manager import update_daily_pnl
 from modules.position_monitor import monitor_tick
 from modules.bic_scanner import run_bic_scan
 from modules.telegram_bot import (
@@ -62,13 +65,6 @@ logger = logging.getLogger("engine")
 PT = pytz.timezone("America/Los_Angeles")
 ET = pytz.timezone("America/New_York")
 
-# Manually add FOMC / high-impact news dates as YYYY-MM-DD strings
-NEWS_DAYS: set = set()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _now_pt() -> datetime:
     return datetime.now(PT)
@@ -82,249 +78,78 @@ def _hhmm_pt() -> str:
     return _now_pt().strftime("%H:%M")
 
 
-def _get_equity() -> float:
-    balance = get_account_balance()
-    if balance and balance.get("total_equity"):
-        equity = float(balance["total_equity"])
-        logger.info("Account equity from Tradier: $%.2f", equity)
-        return equity
-    logger.warning("Could not fetch Tradier balance — using default $%.0f",
-                   STARTING_ACCOUNT_EQUITY)
-    return STARTING_ACCOUNT_EQUITY
+# ─────────────────────────────────────────────────────────────────────────────
+# NEWS CALENDAR (stub — replace with real economic calendar API)
+# ─────────────────────────────────────────────────────────────────────────────
 
+NEWS_DAYS: set = set()   # populated at startup
 
-def _load_news_calendar() -> set:
+def load_news_calendar() -> set:
+    """
+    Stub: returns today's date if any known news event is scheduled.
+    In production: integrate with Tradier's calendar or econoday API.
+    """
+    # For now, operator manually adds dates as YYYY-MM-DD strings
+    # e.g. NEWS_DAYS.add("2026-06-12")  on FOMC days
     logger.info("News calendar loaded — %d flagged dates", len(NEWS_DAYS))
     return NEWS_DAYS
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CRON MODE: STARTUP  (6:25 AM PT)
-# Runtime target: ~2 min
-# ─────────────────────────────────────────────────────────────────────────────
-
-def run_startup(dry_run: bool = False):
-    """
-    Initialize DB, send Engine Online message, morning brief.
-    Runs once and exits — called by the 6:25 AM PT cron.
-    """
-    logger.info("=== STARTUP MODE ===")
-    init_db()
-    news_days  = _load_news_calendar()
-    trade_date = _today()
-    account_equity = _get_equity()
-
-    get_or_create_daily_state(trade_date, account_equity)
-
-    is_news_day = trade_date in news_days
-    mode_str    = "DRY RUN" if dry_run else "PAPER"
-
-    news_line = "⚠️ NEWS DAY — reduced size active" if is_news_day else "✅ Clear — no scheduled news"
-    dry_line  = "\n⚠️ DRY RUN — no orders will be placed" if dry_run else ""
-
-    send(
-        f"🚀 <b>SPX 0DTE Engine online</b>\n"
-        f"Date: {trade_date} | Mode: {mode_str}\n"
-        f"Equity: ${account_equity:,.0f}\n"
-        f"{news_line}"
-        f"{dry_line}"
-    )
-    logger.info("Startup complete — exiting")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CRON MODE: BIC SCAN  (10:15, 11:15, 12:15 ET)
-# Runtime target: ~3 min
-# ─────────────────────────────────────────────────────────────────────────────
-
-def run_bic_scan_mode(dry_run: bool = False):
-    """
-    Run one BIC scan and exit.
-    Called independently at each entry window by the cron schedule.
-    Uses get_daily_trades() to count prior entries so entry_num is correct
-    even across separate job invocations.
-    """
-    logger.info("=== BIC SCAN MODE ===")
-    init_db()
-    trade_date     = _today()
-    account_equity = _get_equity()
-    daily_state    = get_or_create_daily_state(trade_date, account_equity)
-    news_days      = _load_news_calendar()
-    is_news_day    = trade_date in news_days
-
-    now_et = datetime.now(ET).strftime("%H:%M")
-    logger.info("BIC scan triggered at %s ET", now_et)
-
-    if is_paused():
-        logger.info("Engine paused — skipping BIC scan")
-        send("⏸️ BIC scan skipped — engine paused")
-        return
-
-    if daily_state.get("circuit_breaker_hit") or daily_state.get("entries_halted"):
-        logger.info("Circuit breaker / entries halted — skipping scan")
-        send("🛑 BIC scan skipped — circuit breaker active")
-        return
-
-    # Count today's entries from DB so entry_num is correct across separate jobs
-    prior_entries = get_daily_trades(trade_date)
-    entry_num = len(prior_entries) + 1
-
-    logger.info("Running BIC scan #%d (prior entries today: %d)",
-                entry_num, len(prior_entries))
-
-    if not dry_run:
-        result = run_bic_scan(
-            entry_num=entry_num,
-            daily_state=daily_state,
-            account_equity=account_equity,
-            is_news_day=is_news_day,
-        )
-        status = result.get("status", "no_entry")
-        if status == "entered":
-            logger.info("BIC #%d entered — order=%s credit=%.2f",
-                        entry_num, result.get("order_id"), result.get("credit", 0))
-        else:
-            logger.info("BIC #%d — no entry: %s", entry_num, result.get("reason", "n/a"))
-    else:
-        logger.info("[DRY RUN] BIC scan #%d skipped — no order placed", entry_num)
-        send(f"🔍 [DRY RUN] BIC scan #{entry_num} at {now_et} ET — no order placed")
-
-    logger.info("BIC scan complete — exiting")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CRON MODE: EOD CLOSE  (2:30 PM ET)
-# Runtime target: ~3 min
-# ─────────────────────────────────────────────────────────────────────────────
-
-def run_eod_close(dry_run: bool = False):
-    """
-    Close all open positions, send daily/weekly/monthly/yearly summaries.
-    Called by the 2:30 PM ET cron. Runs once and exits.
-    """
-    logger.info("=== EOD CLOSE MODE ===")
-    init_db()
-    trade_date     = _today()
-    account_equity = _get_equity()
-    daily_state    = get_or_create_daily_state(trade_date, account_equity)
-
-    # ── Close all open positions ──────────────────────────────────────────────
-    from core.tradier import place_close_order
-
-    open_spreads = get_open_spreads(trade_date)
-
-    if open_spreads:
-        logger.info("Closing %d open position(s)", len(open_spreads))
-        closed = 0
-        for spread in open_spreads:
-            legs = get_legs_for_spread(spread["id"])
-            close_legs = []
-            for leg in legs:
-                side = ("buy_to_close"
-                        if leg["leg_type"].startswith("SHORT")
-                        else "sell_to_close")
-                close_legs.append({
-                    "symbol":   leg["option_symbol"],
-                    "side":     side,
-                    "quantity": spread["contracts"],
-                })
-
-            if not dry_run:
-                order = place_close_order(close_legs, order_type="market")
-                if order and order.get("id"):
-                    pnl = close_spread(
-                        spread["id"], 0.0, "EOD_CLOSE",
-                        spread["credit_received"]
-                    )
-                    daily_state = update_daily_pnl(trade_date, daily_state, pnl)
-                    closed += 1
-                    logger.info("Closed spread %s — pnl=%.2f", spread["id"][:8], pnl)
-                else:
-                    logger.error("Failed to close spread %s", spread["id"][:8])
-            else:
-                logger.info("[DRY RUN] Would close spread %s", spread["id"][:8])
-                closed += 1
-
-        send(f"🔒 EOD: Closed {closed}/{len(open_spreads)} position(s)")
-    else:
-        logger.info("No open positions — nothing to close")
-
-    # ── Refresh equity after closes ───────────────────────────────────────────
-    balance = get_account_balance()
-    if balance and balance.get("total_equity"):
-        account_equity = float(balance["total_equity"])
-        update_daily_state(trade_date, account_equity=account_equity)
-
-    # ── Daily summary ─────────────────────────────────────────────────────────
-    send_daily_summary(trade_date, account_equity)
-
-    # ── Weekly summary (Fridays) ───────────────────────────────────────────────
-    now_dt = _now_pt()
-    if now_dt.weekday() == WEEKLY_SUMMARY_DAY:
-        send_weekly_summary(STARTING_ACCOUNT_EQUITY, account_equity)
-
-    # ── Monthly summary (last calendar day of month) ──────────────────────────
-    last_day = calendar.monthrange(now_dt.year, now_dt.month)[1]
-    if now_dt.day == last_day:
-        from modules.telegram_bot import send_monthly_summary
-        send_monthly_summary(account_equity)
-
-    # ── Yearly summary (Dec 31) ───────────────────────────────────────────────
-    if now_dt.month == 12 and now_dt.day == 31:
-        from modules.telegram_bot import send_yearly_summary
-        send_yearly_summary(STARTING_ACCOUNT_EQUITY, account_equity)
-
-    logger.info("EOD close complete — exiting")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LEGACY: PERSISTENT ENGINE  (local testing / manual runs only)
+# ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Engine:
-    """
-    Single long-running process. Kept for local --dry-run testing.
-    Do NOT use this via GitHub Actions — it consumes ~400 min/day.
-    """
-
     def __init__(self, dry_run: bool = False):
-        self.dry_run                  = dry_run
-        self._running                 = False
-        self._daily_summary_sent      = False
-        self._weekly_summary_sent     = False
-        self._monthly_summary_sent    = False
-        self._yearly_summary_sent     = False
-        self._bic_windows_fired: set  = set()
-        self._bic_entry_count: int    = 0
-        self.account_equity           = STARTING_ACCOUNT_EQUITY
-        self.daily_state: dict        = {}
-        self.news_days: set           = set()
+        self.dry_run          = dry_run
+        self._running         = False
+        self._daily_summary_sent   = False
+        self._weekly_summary_sent  = False
+        self._monthly_summary_sent = False
+        self._yearly_summary_sent  = False
+        self._bic_windows_fired: set = set()   # track which BIC windows fired today
+        self._bic_entry_count: int = 0          # entries taken today
+        self.account_equity   = STARTING_ACCOUNT_EQUITY
+        self.daily_state: dict = {}
+        self.news_days: set   = set()
         self.cmd_handler: CommandHandler = CommandHandler(engine_ref=self)
+
+    # ── lifecycle ─────────────────────────────────────────────────────────────
 
     def start(self):
         logger.info("=" * 60)
-        logger.info("SPX 0DTE Paper Engine starting — LEGACY mode dry_run=%s",
-                    self.dry_run)
-        logger.info("⚠️  Legacy mode uses ~400 min/day of GitHub Actions minutes.")
-        logger.info("   Use --mode startup|bic_scan|eod_close for cron mode.")
+        logger.info("SPX 0DTE Paper Engine starting — mode=%s dry_run=%s",
+                    "PAPER", self.dry_run)
         logger.info("=" * 60)
 
         init_db()
-        self.news_days = _load_news_calendar()
+        self.news_days = load_news_calendar()
 
+        # Load / create today's state
         trade_date = _today()
-        self.account_equity = _get_equity()
+        balance = get_account_balance()
+        if balance and balance.get("total_equity"):
+            self.account_equity = float(balance["total_equity"])
+            logger.info("Account equity from Tradier: $%.2f", self.account_equity)
+        else:
+            logger.warning(
+                "Could not fetch Tradier balance — using configured default $%.0f",
+                self.account_equity
+            )
+
         self.daily_state = get_or_create_daily_state(trade_date, self.account_equity)
 
         mode_str = "DRY RUN" if self.dry_run else "PAPER"
         send(
-            f"🚀 <b>SPX 0DTE Engine online</b>\n"
-            f"Date: {trade_date} | Mode: {mode_str} (legacy)\n"
-            f"Equity: ${self.account_equity:,.0f}\n"
-            f"{'⚠️ DRY RUN — no orders placed' if self.dry_run else '✅ Ready to trade'}"
+            "🚀 <b>SPX 0DTE Engine online</b>" + chr(10) +
+            "Date: " + trade_date + " | Mode: " + mode_str + chr(10) +
+            "Equity: $" + "{:,.0f}".format(self.account_equity) + chr(10) +
+            ("⚠️ DRY RUN — no orders placed" if self.dry_run else "✅ Ready to trade")
         )
 
+        # Start Telegram command listener
         self.cmd_handler.start()
+
         self._running = True
         self._main_loop()
 
@@ -334,69 +159,84 @@ class Engine:
         self.cmd_handler.stop()
         send("🛑 Engine shutting down")
 
+    # ── signal handlers ───────────────────────────────────────────────────────
+
     def handle_signal(self, sig, frame):
         logger.info("Signal %s received — stopping", sig)
         self.stop()
         sys.exit(0)
 
+    # ── main loop ─────────────────────────────────────────────────────────────
+
     def _main_loop(self):
         logger.info("Entering main polling loop (interval=%ds)", POLL_INTERVAL_SECONDS)
+
         while self._running:
             try:
                 self._tick()
             except Exception as e:
                 logger.exception("Unhandled error in main loop: %s", e)
+
             time.sleep(POLL_INTERVAL_SECONDS)
+
+            # Check shutdown time
             if _hhmm_pt() >= MARKET_CLOSE_PT:
                 logger.info("Market close time reached — stopping engine")
                 self.stop()
                 break
 
     def _tick(self):
-        now_hhmm   = _hhmm_pt()
+        now_hhmm = _hhmm_pt()
         trade_date = _today()
         is_news_day = trade_date in self.news_days
 
-        now_et_hhmm = datetime.now(ET).strftime("%H:%M")
+        # ── BIC scan windows ─────────────────────────────────────────────────
+        from config import BIC_ENTRY_WINDOWS_ET
+        import pytz
+        now_et_hhmm = datetime.now(pytz.timezone("America/New_York")).strftime("%H:%M")
         for window_et in BIC_ENTRY_WINDOWS_ET:
             if now_et_hhmm >= window_et and window_et not in self._bic_windows_fired:
                 self._bic_windows_fired.add(window_et)
                 if not self.dry_run and not is_paused():
                     self._bic_entry_count += 1
+                    logger.info("BIC window %s ET fired — running scan #%d",
+                                window_et, self._bic_entry_count)
                     result = run_bic_scan(
-                        entry_num=self._bic_entry_count,
-                        daily_state=self.daily_state,
-                        account_equity=self.account_equity,
-                        is_news_day=is_news_day,
+                        entry_num      = self._bic_entry_count,
+                        daily_state    = self.daily_state,
+                        account_equity = self.account_equity,
+                        is_news_day    = trade_date in self.news_days,
                     )
                     if result.get("status") == "entered":
                         logger.info("BIC #%d entered: order=%s credit=%.2f",
                                     self._bic_entry_count,
-                                    result.get("order_id"), result.get("credit", 0))
+                                    result.get("order_id"),
+                                    result.get("credit", 0))
                 else:
                     logger.info("[DRY RUN / PAUSED] BIC window %s ET skipped", window_et)
 
+        # ── Daily summary ─────────────────────────────────────────────────────
         if now_hhmm >= DAILY_SUMMARY_TIME_PT and not self._daily_summary_sent:
             self._send_eod_summary(trade_date)
             self._daily_summary_sent = True
 
+        # ── Monthly summary (last trading day of month) ──────────────────────
+        import calendar
         now_dt2  = _now_pt()
         last_day = calendar.monthrange(now_dt2.year, now_dt2.month)[1]
-        if (now_dt2.day == last_day
-                and now_hhmm >= DAILY_SUMMARY_TIME_PT
-                and not self._monthly_summary_sent):
+        if now_dt2.day == last_day and now_hhmm >= DAILY_SUMMARY_TIME_PT and not self._monthly_summary_sent:
             from modules.telegram_bot import send_monthly_summary
             send_monthly_summary(self.account_equity)
             self._monthly_summary_sent = True
 
+        # ── Yearly summary (Dec 31) ────────────────────────────────────────────
         now_dt3 = _now_pt()
-        if (now_dt3.month == 12 and now_dt3.day == 31
-                and now_hhmm >= DAILY_SUMMARY_TIME_PT
-                and not self._yearly_summary_sent):
+        if now_dt3.month == 12 and now_dt3.day == 31 and now_hhmm >= DAILY_SUMMARY_TIME_PT and not self._yearly_summary_sent:
             from modules.telegram_bot import send_yearly_summary
             send_yearly_summary(STARTING_ACCOUNT_EQUITY, self.account_equity)
             self._yearly_summary_sent = True
 
+        # ── Weekly summary (Friday) ───────────────────────────────────────────
         now_dt = _now_pt()
         if (now_dt.weekday() == WEEKLY_SUMMARY_DAY
                 and now_hhmm >= DAILY_SUMMARY_TIME_PT
@@ -406,17 +246,20 @@ class Engine:
             send_weekly_summary(STARTING_ACCOUNT_EQUITY, equity_end)
             self._weekly_summary_sent = True
 
+        # ── Outside market hours — skip monitor ───────────────────────────────
         if now_hhmm < "06:30" or now_hhmm > "13:05":
             return
 
+        # ── Paused ────────────────────────────────────────────────────────────
         if is_paused():
             logger.debug("Engine paused — skipping tick")
             return
 
+        # ── Position monitor (every tick) ─────────────────────────────────────
         if not self.dry_run:
             self.daily_state = monitor_tick(
-                daily_state=self.daily_state,
-                account_equity=self.account_equity,
+                daily_state    = self.daily_state,
+                account_equity = self.account_equity,
             )
         else:
             logger.debug("[DRY RUN] monitor_tick skipped")
@@ -428,9 +271,15 @@ class Engine:
             update_daily_state(trade_date, account_equity=self.account_equity)
         send_daily_summary(trade_date, self.account_equity)
 
+    # ── Telegram-triggered actions ────────────────────────────────────────────
+
     def emergency_close_all(self):
         """Called by Telegram /close_all command."""
+        from modules.position_monitor import _is_hard_close_time
+        from core.database import get_open_spreads, get_legs_for_spread
         from core.tradier import place_close_order
+        from core.database import close_spread
+        from core.risk_manager import update_daily_pnl
 
         trade_date   = _today()
         open_spreads = get_open_spreads(trade_date)
@@ -444,9 +293,7 @@ class Engine:
             legs = get_legs_for_spread(spread["id"])
             close_legs = []
             for leg in legs:
-                side = ("buy_to_close"
-                        if leg["leg_type"].startswith("SHORT")
-                        else "sell_to_close")
+                side = "buy_to_close" if leg["leg_type"].startswith("SHORT") else "sell_to_close"
                 close_legs.append({
                     "symbol":   leg["option_symbol"],
                     "side":     side,
@@ -457,12 +304,9 @@ class Engine:
                 order = place_close_order(close_legs, order_type="market")
                 if order and order.get("id"):
                     pnl = close_spread(
-                        spread["id"], 0.0, "EMERGENCY_CLOSE",
-                        spread["credit_received"]
+                        spread["id"], 0.0, "EMERGENCY_CLOSE", spread["credit_received"]
                     )
-                    self.daily_state = update_daily_pnl(
-                        trade_date, self.daily_state, pnl
-                    )
+                    self.daily_state = update_daily_pnl(trade_date, self.daily_state, pnl)
                     closed += 1
             else:
                 logger.info("[DRY RUN] Would close spread %s", spread["id"][:8])
@@ -475,36 +319,22 @@ class Engine:
 # ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(description="SPX 0DTE Paper Trading Engine")
     parser.add_argument(
         "--dry-run", action="store_true",
-        help="Validate logic without placing any orders"
-    )
-    parser.add_argument(
-        "--mode", default=None,
-        choices=["startup", "bic_scan", "eod_close"],
-        help=(
-            "Cron mode — runs one phase and exits:\n"
-            "  startup   → 6:25 AM PT  (init + morning brief)\n"
-            "  bic_scan  → 10:15/11:15/12:15 ET  (scan + entry)\n"
-            "  eod_close → 2:30 PM ET  (close all + summaries)"
-        )
+        help="Validate all logic without placing any orders"
     )
     args = parser.parse_args()
 
-    if args.mode == "startup":
-        run_startup(dry_run=args.dry_run)
-    elif args.mode == "bic_scan":
-        run_bic_scan_mode(dry_run=args.dry_run)
-    elif args.mode == "eod_close":
-        run_eod_close(dry_run=args.dry_run)
-    else:
-        # Legacy persistent mode — local testing only
-        engine = Engine(dry_run=args.dry_run)
-        signal.signal(signal.SIGINT,  engine.handle_signal)
-        signal.signal(signal.SIGTERM, engine.handle_signal)
-        engine.start()
+    engine = Engine(dry_run=args.dry_run)
+
+    # Graceful shutdown on SIGINT / SIGTERM
+    signal.signal(signal.SIGINT,  engine.handle_signal)
+    signal.signal(signal.SIGTERM, engine.handle_signal)
+
+    engine.start()
 
 
 if __name__ == "__main__":
