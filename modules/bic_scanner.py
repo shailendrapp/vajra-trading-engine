@@ -32,7 +32,7 @@ from config import (
     BIC_WING_TIERS, BIC_SHORT_DELTA_TARGET, BIC_SHORT_DELTA_MIN,
     BIC_SHORT_DELTA_MAX, BIC_MIN_CREDIT, BIC_VIX_FLOOR,
     BIC_ENTRY_WINDOWS_ET, BIC_NEWS_EVENTS,
-    BIC_ADAPTIVE_DELTA,
+    BIC_ADAPTIVE_DELTA, BIC_CREDIT_VIX_TIERS,
     VIX_KILL_SWITCH, IC_CONTRACTS, SPREAD_WIDTH_PTS,
     ANTHROPIC_API_KEY,
 )
@@ -121,6 +121,22 @@ def bic_entry_allowed(
 # ─────────────────────────────────────────────────────────────────────────────
 # STRIKE SELECTION — BIC DELTA METHOD
 # ─────────────────────────────────────────────────────────────────────────────
+
+def min_credit_for_vix(vix: float) -> float:
+    """
+    Returns minimum acceptable credit based on VIX level.
+    At higher VIX, we need more credit to justify the risk —
+    the 2× breach multiplier fires too quickly on thin credits.
+
+    VIX < 17:  $0.50 (normal conditions)
+    VIX 17-20: $0.70 (elevated — today's scenario: VIX 18.3 → blocked $0.55)
+    VIX 20-30: $1.00 (high volatility — need substantial premium)
+    """
+    for vix_threshold, min_credit in BIC_CREDIT_VIX_TIERS:
+        if vix < vix_threshold:
+            return min_credit
+    return BIC_CREDIT_VIX_TIERS[-1][1]
+
 
 def adaptive_delta_target(atm_iv: float) -> float:
     """
@@ -649,17 +665,30 @@ def run_bic_scan(
         send(msg)
         return {"status": "no_setup", "reason": "no_valid_strikes"}
 
-    # Credit check
-    if strikes["total_credit"] < BIC_MIN_CREDIT:
-        msg = (
-            f"⚠️ BIC #{entry_num} — credit ${strikes['total_credit']:.2f} "
-            f"below minimum ${BIC_MIN_CREDIT:.2f}"
+    # Credit-to-VIX sanity check — dynamic minimum based on VIX level
+    # Higher VIX = need more credit: 2x breach fires too fast on thin credits
+    # VIX <17: $0.50 | VIX 17-20: $0.70 | VIX >20: $1.00
+    min_credit = min_credit_for_vix(vix)
+    if strikes["total_credit"] < min_credit:
+        reason = (
+            "credit $%.2f < VIX-adjusted min $%.2f (VIX=%.1f)" %
+            (strikes["total_credit"], min_credit, vix)
         )
-        send(msg)
-        return {"status": "blocked", "reason": "low_credit"}
+        logger.warning("BIC blocked: %s", reason)
+        now_pt = _now_pt(); now_et = _now_et()
+        time_str = now_pt.strftime("%H:%M") + " PT / " + now_et.strftime("%H:%M") + " ET"
+        send(
+            "⚠️ BIC SKIP #" + str(entry_num) + "  --  " + time_str + chr(10) +
+            "Credit $" + str(round(strikes["total_credit"], 2)) +
+            " < min $" + str(round(min_credit, 2)) +
+            " for VIX " + str(round(vix, 1))
+        )
+        return {"status": "blocked", "reason": reason}
 
-    # ── FlashAlpha summary — GEX, expected move, wing width, regime ─────────
-    summary    = get_spx_summary()
+    # ── FlashAlpha summary — fresh fetch at each BIC window ─────────────────
+    # force=True ensures one fresh API call per 60-min window (5 calls/day)
+    # MIN_FORCE_INTERVAL (10 min) prevents burst on simultaneous window fires
+    summary    = get_spx_summary(force=True)
     gex_regime = "⚪ UNKNOWN"
     if summary:
         if summary.regime == "positive_gamma":
