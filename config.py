@@ -157,6 +157,15 @@ BIC_ADAPTIVE_DELTA = [
     (0.99, 0.12),   # atm_iv ≥ 16% → delta 0.12 (high IV, more premium)
 ]
 BIC_MIN_CREDIT         = 0.50   # minimum $0.50 credit per IC ($50/contract)
+
+# Credit-to-VIX sanity check — skip if credit too low for current VIX
+# Prevents entering thin setups where 2x breach fires almost immediately
+# Today's example: VIX 18.3, credit $0.55 → should be blocked
+BIC_CREDIT_VIX_TIERS = [
+    (17.0, 0.50),   # VIX < 17  → min credit $0.50 (normal)
+    (20.0, 0.70),   # VIX 17-20 → min credit $0.70
+    (30.0, 1.00),   # VIX 20-30 → min credit $1.00
+]
 BIC_VIX_FLOOR          = 12.0   # skip if VIX < 12 (credit too thin)
 
 # BIC scan schedule — entry windows (ET)
