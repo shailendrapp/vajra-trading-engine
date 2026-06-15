@@ -688,7 +688,7 @@ def run_bic_scan(
     # ── FlashAlpha summary — fresh fetch at each BIC window ─────────────────
     # force=True ensures one fresh API call per 60-min window (5 calls/day)
     # MIN_FORCE_INTERVAL (10 min) prevents burst on simultaneous window fires
-    summary    = get_spx_summary(force=True)
+    summary    = get_spx_summary()
     gex_regime = "⚪ UNKNOWN"
     if summary:
         if summary.regime == "positive_gamma":
