@@ -150,12 +150,19 @@ BIC_SHORT_DELTA_MAX    = 0.12   # maximum acceptable delta
 
 # Adaptive delta tiers by ATM IV
 # atm_iv = VIX/100 (no premium — raw IV)
+# Adaptive delta tiers — original validated thresholds
+# Delta target based on ATM IV — lower IV → lower delta → further OTM
 BIC_ADAPTIVE_DELTA = [
     (0.11, 0.05),   # atm_iv < 11% → delta 0.05 (very far OTM)
     (0.13, 0.06),   # atm_iv < 13% → delta 0.06 (low IV)
     (0.16, 0.09),   # atm_iv < 16% → delta 0.09 (normal — standard BIC)
     (0.99, 0.12),   # atm_iv ≥ 16% → delta 0.12 (high IV, more premium)
 ]
+
+# EM validation settings
+BIC_EM_MULT          = 0.65    # min distance = EM × 0.65 (relaxed from 0.80)
+BIC_TRADING_HOURS    = 6.5     # 9:30 AM - 4:00 PM ET
+BIC_USE_TIME_ADJ_EM  = True    # use time-adjusted EM per window (shrinks through day)
 BIC_MIN_CREDIT         = 0.50   # minimum $0.50 credit per IC ($50/contract)
 
 # Credit-to-VIX sanity check — skip if credit too low for current VIX
