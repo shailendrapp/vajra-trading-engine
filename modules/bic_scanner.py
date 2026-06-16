@@ -33,6 +33,7 @@ from config import (
     BIC_SHORT_DELTA_MAX, BIC_MIN_CREDIT, BIC_VIX_FLOOR,
     BIC_ENTRY_WINDOWS_ET, BIC_NEWS_EVENTS,
     BIC_ADAPTIVE_DELTA, BIC_CREDIT_VIX_TIERS,
+    BIC_EM_MULT, BIC_TRADING_HOURS, BIC_USE_TIME_ADJ_EM,
     VIX_KILL_SWITCH, IC_CONTRACTS, SPREAD_WIDTH_PTS,
     ANTHROPIC_API_KEY,
 )
@@ -780,7 +781,25 @@ def run_bic_scan(
     # Short strikes must be at least 80% of expected move away from SPX
     # Prevents entering ICs where strikes are inside the expected move
     if summary and summary.expected_move > 0 and strikes:
-        min_distance  = summary.expected_move * 0.80
+        # Time-adjusted EM — shrinks through the day as expiry approaches
+        # 10:15 AM: ~94% of full EM remaining
+        # 2:15 PM:  ~52% of full EM remaining
+        if BIC_USE_TIME_ADJ_EM:
+            now_et = _now_et()
+            hours_since_open = (now_et.hour - 9) + (now_et.minute - 30) / 60
+            hours_remaining  = max(BIC_TRADING_HOURS - hours_since_open, 0.5)
+            import math as _math
+            time_factor      = _math.sqrt(hours_remaining / BIC_TRADING_HOURS)
+            adj_em           = summary.expected_move * time_factor
+            logger.info(
+                "EM time-adjusted: full=±%.0f hrs_remaining=%.2f "
+                "factor=%.2f adj_em=±%.0f",
+                summary.expected_move, hours_remaining, time_factor, adj_em
+            )
+        else:
+            adj_em = summary.expected_move
+
+        min_distance  = adj_em * BIC_EM_MULT
         short_call_k  = strikes["short_call"]["strike"]
         short_put_k   = strikes["short_put"]["strike"]
         call_distance = short_call_k - spx
@@ -796,19 +815,20 @@ def run_bic_scan(
                 )
             )
             logger.warning("BIC blocked: %s", reason)
-            now_pt = _now_pt(); now_et = _now_et()
-            time_str = now_pt.strftime("%H:%M") + " PT / " + now_et.strftime("%H:%M") + " ET"
+            now_pt = _now_pt(); now_et2 = _now_et()
+            time_str = now_pt.strftime("%H:%M") + " PT / " + now_et2.strftime("%H:%M") + " ET"
             send(
                 "⛔ BIC SKIP #" + str(entry_num) + "  --  " + time_str + chr(10) +
-                "SPX " + str(round(spx, 2)) + "  |  EM +-" + str(round(summary.expected_move, 0)) + chr(10) +
+                "SPX " + str(round(spx, 2)) + "  |  EM +-" + str(round(adj_em, 0)) + chr(10) +
                 "Reason: " + reason
             )
             return {"status": "blocked", "reason": "strike_inside_em"}
         else:
             logger.info(
                 "EM validation passed: call %.0fpts OTM (min %.0f) "
-                "put %.0fpts OTM (min %.0f)",
-                call_distance, min_distance, put_distance, min_distance
+                "put %.0fpts OTM (min %.0f) [adj_em=±%.0f mult=%.2f]",
+                call_distance, min_distance, put_distance, min_distance,
+                adj_em, BIC_EM_MULT
             )
 
     # ── Claude verdict ────────────────────────────────────────────────────
