@@ -854,8 +854,36 @@ def run_bic_scan(
         {"symbol": strikes["long_put"]["symbol"],   "side": "buy_to_open",  "quantity": contracts},
     ]
 
-    order = place_spread_order(order_legs, order_type="market")
+    order    = place_spread_order(order_legs, order_type="market")
     order_id = order.get("id") if order else None
+
+    # ── Check for rejection ────────────────────────────────────────────────
+    if order and order.get("_rejected"):
+        reject_reason = order.get("_reject_reason", "Unknown")
+        logger.error("BIC #%d ORDER REJECTED: %s", entry_num, reject_reason)
+        now_pt = _now_pt(); now_et = _now_et()
+        time_str = now_pt.strftime("%H:%M") + " PT / " + now_et.strftime("%H:%M") + " ET"
+        send(
+            "🚨 ORDER REJECTED #" + str(entry_num) + "  --  " + time_str + chr(10) +
+            "SPX " + str(round(spx, 2)) + "  |  VIX " + str(round(vix, 1)) + chr(10) +
+            "Reason: " + reject_reason + chr(10) +
+            "Action: Check Tradier account permissions"
+        )
+        return {
+            "status":   "order_rejected",
+            "reason":   reject_reason,
+            "order_id": order_id,
+        }
+
+    if not order_id:
+        logger.error("BIC #%d order placement failed — no order ID returned", entry_num)
+        now_pt = _now_pt()
+        send(
+            "⚠️ ORDER FAILED #" + str(entry_num) + "  --  " +
+            now_pt.strftime("%H:%M") + " PT" + chr(10) +
+            "No order ID returned from Tradier — check logs"
+        )
+        return {"status": "order_failed", "order_id": None}
 
     # ── Persist to DB ─────────────────────────────────────────────────────
     if order_id:
