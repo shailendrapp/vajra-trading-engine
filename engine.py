@@ -84,6 +84,16 @@ def _hhmm_pt() -> str:
 
 NEWS_DAYS: set = set()   # populated at startup
 
+FOMC_DAYS_2026 = {
+    "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
+    "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09",
+}
+
+def _is_fomc_day(trade_date: str) -> bool:
+    """Returns True if today is an FOMC announcement day."""
+    return trade_date in FOMC_DAYS_2026
+
+
 def load_news_calendar() -> set:
     """
     Returns set of high-impact news dates to skip trading.
@@ -95,25 +105,12 @@ def load_news_calendar() -> set:
     Update annually — add next year's dates each December.
     """
     NEWS_DAYS.update({
-        # ── FOMC Decision Days 2026 ONLY ─────────────────────────────────────
-        # Rationale: FOMC announces at 2:00 PM ET — squarely within our
-        # trading session and AFTER entries are placed. Any open IC can be
-        # blindsided by a 30-80pt SPX spike at 2 PM.
+        # FOMC days are NOT blocked for entry —
+        # morning sessions are allowed but positions are force-closed
+        # at FOMC_EXIT_TIME_PT (10:30 AM PT) before the 2 PM ET announcement.
+        # See _is_fomc_day() and position_monitor for early exit logic.
         #
-        # CPI/NFP/PCE all release at 8:30 AM ET — before our first entry
-        # at 10:15 AM. Initial volatility resolves before we trade.
-        # FlashAlpha regime + VVIX naturally handle residual morning risk.
-        #
-        # Source: federalreserve.gov/monetarypolicy/fomccalendars.htm
-        "2026-01-28",   # Jan 27-28
-        "2026-03-18",   # Mar 17-18 (dot plot)
-        "2026-04-29",   # Apr 28-29
-        "2026-06-17",   # Jun 16-17 (dot plot)
-        "2026-07-29",   # Jul 28-29
-        "2026-09-16",   # Sep 15-16 (dot plot)
-        "2026-10-28",   # Oct 27-28
-        "2026-12-09",   # Dec 8-9 (dot plot)
-        # Update each December with following year's FOMC dates
+        # Leave this empty — FOMC handling is done via early exit, not skip.
     })
     logger.info("News calendar loaded — %d flagged dates", len(NEWS_DAYS))
     return NEWS_DAYS
