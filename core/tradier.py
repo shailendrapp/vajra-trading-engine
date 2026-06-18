@@ -303,7 +303,26 @@ def place_spread_order(
             logger.error("No order object in response: %s", response)
             return None
 
-        logger.info("Order placed: id=%s status=%s", order.get("id"), order.get("status"))
+        order_id     = order.get("id")
+        order_status = order.get("status", "")
+
+        # Check for rejected status and extract reason
+        if order_status == "rejected" or not order_id:
+            reject_reason = (
+                order.get("reject_reason") or
+                order.get("reason") or
+                str(response.get("errors", {}).get("error", "Unknown reason"))
+            )
+            logger.error(
+                "Order REJECTED: id=%s status=%s reason=%s",
+                order_id, order_status, reject_reason
+            )
+            # Attach rejection info for caller to handle
+            order["_rejected"]       = True
+            order["_reject_reason"]  = reject_reason
+            return order
+
+        logger.info("Order placed: id=%s status=%s", order_id, order_status)
         return order
     except (KeyError, TypeError) as e:
         logger.error("Error parsing order response: %s | raw: %s", e, response)
