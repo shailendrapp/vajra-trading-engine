@@ -36,7 +36,7 @@ import pytz
 from config import (
     POLL_INTERVAL_SECONDS, MARKET_OPEN_PT, MARKET_CLOSE_PT,
     DAILY_SUMMARY_TIME_PT, WEEKLY_SUMMARY_DAY, STARTING_ACCOUNT_EQUITY,
-    NEWS_DAY_SYMBOLS, LOG_DIR
+    NEWS_DAY_SYMBOLS, LOG_DIR, FOMC_EXIT_TIME_PT,
 )
 from core.database import init_db, get_or_create_daily_state, update_daily_state
 from core.tradier import get_account_balance, get_vix
@@ -79,15 +79,26 @@ def _hhmm_pt() -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NEWS CALENDAR (stub — replace with real economic calendar API)
+# NEWS CALENDAR
 # ─────────────────────────────────────────────────────────────────────────────
 
 NEWS_DAYS: set = set()   # populated at startup
 
+# FOMC decision days — announcement at 2:00 PM ET
+# These days allow morning entries but force-exit at FOMC_EXIT_TIME_PT (10:30 AM PT)
+# Update each December with following year's dates
+# Source: federalreserve.gov/monetarypolicy/fomccalendars.htm
 FOMC_DAYS_2026 = {
-    "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
-    "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09",
+    "2026-01-28",   # Jan 27-28
+    "2026-03-18",   # Mar 17-18 (dot plot)
+    "2026-04-29",   # Apr 28-29
+    "2026-06-17",   # Jun 16-17 (dot plot)
+    "2026-07-29",   # Jul 28-29
+    "2026-09-16",   # Sep 15-16 (dot plot)
+    "2026-10-28",   # Oct 27-28
+    "2026-12-09",   # Dec 8-9  (dot plot)
 }
+
 
 def _is_fomc_day(trade_date: str) -> bool:
     """Returns True if today is an FOMC announcement day."""
@@ -96,22 +107,21 @@ def _is_fomc_day(trade_date: str) -> bool:
 
 def load_news_calendar() -> set:
     """
-    Returns set of high-impact news dates to skip trading.
-    Sources:
-      FOMC: federalreserve.gov (8 meetings/year, decision day = second day)
-      CPI:  bls.gov schedule (released ~8:30 AM ET, second week each month)
-      NFP:  bls.gov (first Friday each month)
-    All dates are the ANNOUNCEMENT day (when market impact occurs).
-    Update annually — add next year's dates each December.
+    Returns set of high-impact news dates to skip BIC entries entirely.
+
+    FOMC days are NOT in this set — they allow morning entries but
+    force-exit all positions at FOMC_EXIT_TIME_PT (10:30 AM PT) via
+    position_monitor before the 2:00 PM ET announcement.
+
+    CPI/NFP/PCE release at 8:30 AM ET — before our 10:15 AM first entry.
+    Initial volatility resolves before we trade so these are NOT blocked.
+    FlashAlpha regime + VVIX naturally handle any residual morning risk.
+
+    Add dates here only for events that occur DURING the trading session
+    (after 10:15 AM ET) that would blindside open positions.
     """
-    NEWS_DAYS.update({
-        # FOMC days are NOT blocked for entry —
-        # morning sessions are allowed but positions are force-closed
-        # at FOMC_EXIT_TIME_PT (10:30 AM PT) before the 2 PM ET announcement.
-        # See _is_fomc_day() and position_monitor for early exit logic.
-        #
-        # Leave this empty — FOMC handling is done via early exit, not skip.
-    })
+    # Currently empty — FOMC handled via early exit, not full-day skip
+    # Add future session-time events here as needed
     logger.info("News calendar loaded — %d flagged dates", len(NEWS_DAYS))
     return NEWS_DAYS
 
@@ -160,12 +170,22 @@ class Engine:
 
         self.daily_state = get_or_create_daily_state(trade_date, self.account_equity)
 
+        # Log FOMC status for today
+        if _is_fomc_day(trade_date):
+            logger.info(
+                "⚠️  FOMC DAY — entries allowed until %s PT, "
+                "then force-exit before 2 PM ET announcement",
+                FOMC_EXIT_TIME_PT
+            )
+
         mode_str = "DRY RUN" if self.dry_run else "PAPER"
         send(
             "🚀 <b>SPX 0DTE Engine online</b>" + chr(10) +
             "Date: " + trade_date + " | Mode: " + mode_str + chr(10) +
             "Equity: $" + "{:,.0f}".format(self.account_equity) + chr(10) +
-            ("⚠️ DRY RUN — no orders placed" if self.dry_run else "✅ Ready to trade")
+            ("⚠️ FOMC day — exit by " + FOMC_EXIT_TIME_PT + " PT"
+             if _is_fomc_day(trade_date)
+             else "✅ Ready to trade")
         )
 
         # Start Telegram command listener
@@ -207,7 +227,7 @@ class Engine:
                 break
 
     def _tick(self):
-        now_hhmm = _hhmm_pt()
+        now_hhmm   = _hhmm_pt()
         trade_date = _today()
         is_news_day = trade_date in self.news_days
 
@@ -226,7 +246,7 @@ class Engine:
                         entry_num      = self._bic_entry_count,
                         daily_state    = self.daily_state,
                         account_equity = self.account_equity,
-                        is_news_day    = trade_date in self.news_days,
+                        is_news_day    = is_news_day,
                     )
                     if result.get("status") == "entered":
                         logger.info("BIC #%d entered: order=%s credit=%.2f",
@@ -245,14 +265,18 @@ class Engine:
         import calendar
         now_dt2  = _now_pt()
         last_day = calendar.monthrange(now_dt2.year, now_dt2.month)[1]
-        if now_dt2.day == last_day and now_hhmm >= DAILY_SUMMARY_TIME_PT and not self._monthly_summary_sent:
+        if (now_dt2.day == last_day
+                and now_hhmm >= DAILY_SUMMARY_TIME_PT
+                and not self._monthly_summary_sent):
             from modules.telegram_bot import send_monthly_summary
             send_monthly_summary(self.account_equity)
             self._monthly_summary_sent = True
 
-        # ── Yearly summary (Dec 31) ────────────────────────────────────────────
+        # ── Yearly summary (Dec 31) ───────────────────────────────────────────
         now_dt3 = _now_pt()
-        if now_dt3.month == 12 and now_dt3.day == 31 and now_hhmm >= DAILY_SUMMARY_TIME_PT and not self._yearly_summary_sent:
+        if (now_dt3.month == 12 and now_dt3.day == 31
+                and now_hhmm >= DAILY_SUMMARY_TIME_PT
+                and not self._yearly_summary_sent):
             from modules.telegram_bot import send_yearly_summary
             send_yearly_summary(STARTING_ACCOUNT_EQUITY, self.account_equity)
             self._yearly_summary_sent = True
@@ -281,6 +305,7 @@ class Engine:
             self.daily_state = monitor_tick(
                 daily_state    = self.daily_state,
                 account_equity = self.account_equity,
+                trade_date     = trade_date,
             )
         else:
             logger.debug("[DRY RUN] monitor_tick skipped")
