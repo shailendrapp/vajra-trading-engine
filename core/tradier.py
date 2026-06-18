@@ -323,6 +323,33 @@ def place_spread_order(
             return order
 
         logger.info("Order placed: id=%s status=%s", order_id, order_status)
+
+        # Tradier sandbox sometimes accepts orders then rejects async.
+        # Poll order status after 3 seconds to catch async rejections.
+        if order_id:
+            import time as _time
+            _time.sleep(3)
+            status_data = get_order_status(str(order_id))
+            if status_data:
+                actual_status = status_data.get("status", "")
+                if actual_status == "rejected":
+                    reject_reason = (
+                        status_data.get("reject_reason") or
+                        status_data.get("reason") or
+                        "Rejected after placement — check account permissions"
+                    )
+                    logger.error(
+                        "Order %s REJECTED (async): %s",
+                        order_id, reject_reason
+                    )
+                    order["_rejected"]      = True
+                    order["_reject_reason"] = reject_reason
+                    return order
+                logger.info(
+                    "Order %s confirmed status: %s",
+                    order_id, actual_status
+                )
+
         return order
     except (KeyError, TypeError) as e:
         logger.error("Error parsing order response: %s | raw: %s", e, response)
