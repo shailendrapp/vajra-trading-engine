@@ -305,7 +305,6 @@ class Engine:
             self.daily_state = monitor_tick(
                 daily_state    = self.daily_state,
                 account_equity = self.account_equity,
-                trade_date     = trade_date,
             )
         else:
             logger.debug("[DRY RUN] monitor_tick skipped")
