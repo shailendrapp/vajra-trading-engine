@@ -140,6 +140,7 @@ class Engine:
         self._yearly_summary_sent  = False
         self._bic_windows_fired: set = set()   # track which BIC windows fired today
         self._bic_entry_count: int = 0          # entries taken today
+        self._consecutive_rejections: int = 0   # consecutive order rejections
         self.account_equity   = STARTING_ACCOUNT_EQUITY
         self.daily_state: dict = {}
         self.news_days: set   = set()
@@ -249,10 +250,29 @@ class Engine:
                         is_news_day    = is_news_day,
                     )
                     if result.get("status") == "entered":
+                        self._consecutive_rejections = 0   # reset on success
                         logger.info("BIC #%d entered: order=%s credit=%.2f",
                                     self._bic_entry_count,
                                     result.get("order_id"),
                                     result.get("credit", 0))
+                    elif result.get("status") == "order_rejected":
+                        self._consecutive_rejections += 1
+                        logger.error(
+                            "Order rejected (%d consecutive) — reason: %s",
+                            self._consecutive_rejections, result.get("reason")
+                        )
+                        if self._consecutive_rejections >= 2:
+                            send(
+                                "🚨 TRADING HALTED — 2 consecutive order rejections" + chr(10) +
+                                "Reason: " + str(result.get("reason", "Unknown")) + chr(10) +
+                                "Check Tradier account permissions immediately" + chr(10) +
+                                "Use /resume to restart after fixing"
+                            )
+                            pause_trading("consecutive order rejections")
+                            logger.critical(
+                                "Trading paused after %d consecutive rejections",
+                                self._consecutive_rejections
+                            )
                 else:
                     logger.info("[DRY RUN / PAUSED] BIC window %s ET skipped", window_et)
 
