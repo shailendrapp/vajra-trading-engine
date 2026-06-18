@@ -21,7 +21,7 @@ import pytz
 from config import (
     IC_CONTRACTS, IC_CONTRACT_1_TARGET, IC_CONTRACT_2_TARGET,
     BREACH_DELTA_THRESHOLD, BREACH_PNL_MULTIPLIER,
-    HARD_CLOSE_TIME_PT,
+    HARD_CLOSE_TIME_PT, FOMC_EXIT_TIME_PT,
 )
 from core.database import (
     get_open_spreads, get_legs_for_spread, close_spread,
@@ -45,6 +45,26 @@ def _today() -> str:
 def _is_hard_close_time() -> bool:
     now = _now_pt()
     hh, mm = map(int, HARD_CLOSE_TIME_PT.split(":"))
+    return now >= now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+
+# FOMC decision days — force-exit at FOMC_EXIT_TIME_PT (10:30 AM PT)
+# before the 2:00 PM ET announcement. Update each December.
+FOMC_DAYS = {
+    "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
+    "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09",
+}
+
+
+def _is_fomc_exit_time(trade_date: str) -> bool:
+    """
+    Returns True if it's an FOMC day AND past the early exit time (10:30 AM PT).
+    Forces all positions closed 30 minutes before the 2:00 PM ET announcement.
+    """
+    if trade_date not in FOMC_DAYS:
+        return False
+    now = _now_pt()
+    hh, mm = map(int, FOMC_EXIT_TIME_PT.split(":"))
     return now >= now.replace(hour=hh, minute=mm, second=0, microsecond=0)
 
 
@@ -168,7 +188,8 @@ def _execute_close(spread: Dict, legs: List[Dict], contracts: int,
 
 def monitor_tick(daily_state: Dict, account_equity: float) -> Dict:
     trade_date   = _today()
-    hard_close   = _is_hard_close_time()
+    hard_close   = _is_hard_close_time() or _is_fomc_exit_time(trade_date)
+    fomc_exit    = _is_fomc_exit_time(trade_date)
     vix          = get_vix() or 0.0
     open_spreads = get_open_spreads(trade_date)
 
@@ -203,6 +224,7 @@ def monitor_tick(daily_state: Dict, account_equity: float) -> Dict:
 
         # ── HARD CLOSE — 12:30 PM PT, close everything remaining ────────────
         if hard_close:
+            close_reason = "FOMC_EXIT" if fomc_exit and not _is_hard_close_time() else "HARD_CLOSE"
             remaining = (
                 (tier.get("tier1_contracts", 0) if not tier.get("tier1_closed") else 0) +
                 (tier.get("tier2_contracts", 0) if not tier.get("tier2_closed") else 0) +
