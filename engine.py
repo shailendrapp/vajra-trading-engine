@@ -86,11 +86,70 @@ NEWS_DAYS: set = set()   # populated at startup
 
 def load_news_calendar() -> set:
     """
-    Stub: returns today's date if any known news event is scheduled.
-    In production: integrate with Tradier's calendar or econoday API.
+    Returns set of high-impact news dates to skip trading.
+    Sources:
+      FOMC: federalreserve.gov (8 meetings/year, decision day = second day)
+      CPI:  bls.gov schedule (released ~8:30 AM ET, second week each month)
+      NFP:  bls.gov (first Friday each month)
+    All dates are the ANNOUNCEMENT day (when market impact occurs).
+    Update annually — add next year's dates each December.
     """
-    # For now, operator manually adds dates as YYYY-MM-DD strings
-    # e.g. NEWS_DAYS.add("2026-06-12")  on FOMC days
+    NEWS_DAYS.update({
+        # ── FOMC Decision Days 2026 (second day of each meeting) ─────────────
+        # Source: federalreserve.gov/monetarypolicy/fomccalendars.htm
+        "2026-01-28",   # Jan 27-28
+        "2026-03-18",   # Mar 17-18 (dot plot)
+        "2026-04-29",   # Apr 28-29
+        "2026-06-17",   # Jun 16-17 (dot plot) ← today
+        "2026-07-29",   # Jul 28-29
+        "2026-09-16",   # Sep 15-16 (dot plot)
+        "2026-10-28",   # Oct 27-28
+        "2026-12-09",   # Dec 8-9 (dot plot)
+
+        # ── CPI Release Dates 2026 (8:30 AM ET) ──────────────────────────────
+        # Source: bls.gov/schedule/news_release/cpi.htm
+        "2026-01-13",   # Dec 2025 CPI
+        "2026-02-11",   # Jan 2026 CPI
+        "2026-03-11",   # Feb 2026 CPI (approx)
+        "2026-04-10",   # Mar 2026 CPI
+        "2026-05-12",   # Apr 2026 CPI
+        "2026-06-10",   # May 2026 CPI
+        "2026-07-14",   # Jun 2026 CPI
+        "2026-08-12",   # Jul 2026 CPI (approx)
+        "2026-09-10",   # Aug 2026 CPI (approx)
+        "2026-10-13",   # Sep 2026 CPI (approx)
+        "2026-11-12",   # Oct 2026 CPI (approx)
+        "2026-12-10",   # Nov 2026 CPI (approx)
+
+        # ── NFP (Non-Farm Payrolls) 2026 — First Friday each month ───────────
+        # Source: bls.gov employment situation schedule
+        "2026-01-09",   # Dec 2025 jobs
+        "2026-02-06",   # Jan 2026 jobs
+        "2026-03-06",   # Feb 2026 jobs
+        "2026-04-03",   # Mar 2026 jobs
+        "2026-05-08",   # Apr 2026 jobs (second Friday — May 1 is holiday)
+        "2026-06-05",   # May 2026 jobs
+        "2026-07-10",   # Jun 2026 jobs (second Friday — Jul 4 holiday)
+        "2026-08-07",   # Jul 2026 jobs
+        "2026-09-04",   # Aug 2026 jobs
+        "2026-10-02",   # Sep 2026 jobs
+        "2026-11-06",   # Oct 2026 jobs
+        "2026-12-04",   # Nov 2026 jobs
+
+        # ── PCE Price Index 2026 (Fed's preferred inflation gauge) ────────────
+        "2026-01-30",   # Dec 2025 PCE (approx — last Friday of month)
+        "2026-02-27",   # Jan 2026 PCE
+        "2026-03-27",   # Feb 2026 PCE
+        "2026-04-30",   # Mar 2026 PCE
+        "2026-05-29",   # Apr 2026 PCE
+        "2026-06-26",   # May 2026 PCE
+        "2026-07-31",   # Jun 2026 PCE
+        "2026-08-28",   # Jul 2026 PCE
+        "2026-09-25",   # Aug 2026 PCE
+        "2026-10-30",   # Sep 2026 PCE
+        "2026-11-25",   # Oct 2026 PCE
+        "2026-12-18",   # Nov 2026 PCE
+    })
     logger.info("News calendar loaded — %d flagged dates", len(NEWS_DAYS))
     return NEWS_DAYS
 
