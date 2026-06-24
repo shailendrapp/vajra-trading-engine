@@ -52,6 +52,8 @@ def send(text: str, parse_mode: str = "HTML") -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.debug("Telegram not configured — message suppressed: %s", text[:80])
         return False
+    # Prepend Vajra header to every message
+    text = "⚡ <b>Vajra Alert</b>" + chr(10) + text
     # Try with parse_mode first, fall back to plain text if formatting fails
     for mode in ([parse_mode, None] if parse_mode else [None]):
         try:
