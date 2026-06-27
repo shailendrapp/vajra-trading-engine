@@ -2,31 +2,15 @@ name: Vajra Trading Engine
 
 on:
   schedule:
-    - cron: '05 13 * * 1-5'   # 6:05 AM PDT startup (before 9:45 AM ET window)
-    - cron: '05 14 * * 1-5'   # 6:05 AM PST startup (before 9:45 AM ET window)
-    - cron: '15 14 * * 1-5'   # BIC window 1 EDT
-    - cron: '15 15 * * 1-5'   # BIC window 1 EST / window 2 EDT
-    - cron: '15 16 * * 1-5'   # BIC window 2 EST / window 3 EDT
-    - cron: '15 17 * * 1-5'   # BIC window 3 EST
-    - cron: '*/5 14-19 * * 1-5'  # monitor every 5min EDT
-    - cron: '*/5 15-20 * * 1-5'  # monitor every 5min EST
-    - cron: '35 19 * * 1-5'   # EOD close EDT
-    - cron: '35 20 * * 1-5'   # EOD close EST
+    # Single long-running job — engine handles all windows internally
+    # Start 6:05 AM PT (40min before 9:45 AM ET first BIC window)
+    - cron: '05 13 * * 1-5'   # 6:05 AM PDT (summer)
+    - cron: '05 14 * * 1-5'   # 6:05 AM PST (winter)
 
   workflow_dispatch:
     inputs:
-      mode:
-        description: 'Which phase to run'
-        required: true
-        default: 'bic_scan'
-        type: choice
-        options:
-          - startup
-          - bic_scan
-          - monitor
-          - eod_close
       dry_run:
-        description: 'Dry run (no orders placed)'
+        description: 'Run in dry-run mode (no orders placed)'
         required: false
         default: 'false'
         type: choice
@@ -40,9 +24,9 @@ concurrency:
 
 jobs:
   run-vajra:
-    name: Vajra [${{ github.event.inputs.mode || 'cron' }}]
+    name: Vajra Trading Engine
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 420   # 7 hours — covers full 6:05 AM to 1:15 PM PT session
 
     steps:
       - name: Checkout repository
@@ -76,28 +60,6 @@ jobs:
             echo "ℹ️  No previous database"
           fi
 
-      - name: Determine run mode
-        id: mode
-        run: |
-          INPUT_MODE="${{ github.event.inputs.mode }}"
-          if [ -n "$INPUT_MODE" ]; then
-            echo "mode=$INPUT_MODE" >> $GITHUB_OUTPUT
-            echo "▶ Manual — mode: $INPUT_MODE"
-          else
-            MINUTE=$(date -u +%M)
-            HOUR=$(date -u +%H)
-            if [ "$MINUTE" = "25" ]; then
-              echo "mode=startup" >> $GITHUB_OUTPUT
-            elif [ "$MINUTE" = "35" ]; then
-              echo "mode=eod_close" >> $GITHUB_OUTPUT
-            elif [ "$MINUTE" = "15" ]; then
-              echo "mode=bic_scan" >> $GITHUB_OUTPUT
-            else
-              echo "mode=monitor" >> $GITHUB_OUTPUT
-            fi
-            echo "▶ Cron mode: $(cat $GITHUB_OUTPUT | grep mode | cut -d= -f2) UTC ${HOUR}:${MINUTE}"
-          fi
-
       - name: Run system validation
         env:
           TRADIER_API_KEY:    ${{ secrets.TRADIER_API_KEY }}
@@ -109,7 +71,7 @@ jobs:
           ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
         run: python tests/validate.py
 
-      - name: Run Vajra Engine — ${{ steps.mode.outputs.mode }}
+      - name: Run Vajra Engine
         env:
           TRADIER_API_KEY:    ${{ secrets.TRADIER_API_KEY }}
           TRADIER_ACCOUNT_ID: ${{ secrets.TRADIER_ACCOUNT_ID }}
@@ -121,14 +83,13 @@ jobs:
           DB_PATH:            data/trades.db
           LOG_DIR:            logs/
         run: |
-          MODE="${{ steps.mode.outputs.mode }}"
           DRY_RUN="${{ github.event.inputs.dry_run }}"
           if [ "$DRY_RUN" = "true" ]; then
-            echo "🔍 Dry run"
-            python engine.py --mode "$MODE" --dry-run
+            echo "🔍 Running in DRY-RUN mode"
+            python engine.py --dry-run
           else
-            echo "🚀 PAPER trading mode"
-            python engine.py --mode "$MODE"
+            echo "🚀 Running in PAPER trading mode"
+            python engine.py
           fi
 
       - name: Save database
@@ -141,9 +102,11 @@ jobs:
           key: argus-trades-db
 
       - name: Upload logs
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: vajra-logs-${{ github.run_id }}
-          path: logs/
-          retention-days: 7
+          path: |
+            logs/
+            data/trades.db
+          retention-days: 30
