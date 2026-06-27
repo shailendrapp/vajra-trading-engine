@@ -70,7 +70,7 @@ IC_CONTRACT_2_TARGET    = 0.70       # 70% profit
 # ─────────────────────────────────────────────
 BREACH_DELTA_THRESHOLD   = 0.40
 BREACH_PNL_MULTIPLIER    = 2.00
-HARD_CLOSE_TIME_PT       = "12:30"
+HARD_CLOSE_TIME_PT       = "13:00"   # full session — 4:00 PM ET natural market close
 FOMC_EXIT_TIME_PT        = "10:30"   # exit all positions before 2 PM ET FOMC announcement
 
 # ─────────────────────────────────────────────
