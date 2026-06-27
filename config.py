@@ -179,11 +179,12 @@ BIC_VIX_FLOOR          = 12.0   # skip if VIX < 12 (credit too thin)
 # BIC scan schedule — entry windows (ET)
 # System scans at these times and auto-enters if conditions met
 BIC_ENTRY_WINDOWS_ET = [
+    "09:45",   # Window 0 — early premium (IV 20-35% higher, backtest validated)
     "10:15",   # Window 1 — post open-range
     "11:15",   # Window 2
     "12:15",   # Window 3 — best theta window
     "13:15",   # Window 4
-    "14:15",   # Window 5 — final entry (leaves 75min before 12:30 PT close)
+    "14:15",   # Window 5 — final entry
 ]
 
 # News events to skip (checked against economic calendar)
