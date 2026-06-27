@@ -113,20 +113,22 @@ def send_daily_summary(trade_date: str, account_equity: float) -> None:
 
     trades_block = "\n".join(rows) if rows else "_No trades today_"
 
-    msg = f"""📊 *Daily Summary — {trade_date}*
-━━━━━━━━━━━━━━━━━━━━━━━━
-*Trades:*       {total} total | {len(winners)}W / {len(losers)}L
-*Win Rate:*     {win_rate:.0f}%
-*Net P&L:*      ${gross_pnl:+.2f}
-*Account:*      ${account_equity + gross_pnl:,.0f}
-━━━━━━━━━━━━━━━━━━━━━━━━
-*Circuit Breaker:* {cb_flag}
-*Stop-outs:*       {stopouts}
-*Open positions:*  {len(open_t)} (carry risk — check!)
-━━━━━━━━━━━━━━━━━━━━━━━━
-*Trade Log:*
-{trades_block}"""
-
+    msg = (
+        f"📊 <b>Daily Summary — {trade_date}</b>" + chr(10) +
+        f"━━━━━━━━━━━━━━━━━━━━━━━━" + chr(10) +
+        f"Trades:    {total} total | {len(winners)}W / {len(losers)}L" + chr(10) +
+        f"Win Rate:  {win_rate:.0f}%" + chr(10) +
+        f"Net P&L:   ${gross_pnl:+.2f}" + chr(10) +
+        f"Account:   ${account_equity + gross_pnl:,.0f}" + chr(10) +
+        f"━━━━━━━━━━━━━━━━━━━━━━━━" + chr(10) +
+        f"Circuit Breaker: {cb_flag}" + chr(10) +
+        f"Stop-outs:       {stopouts}" + chr(10) +
+        f"Open positions:  {len(open_t)}" +
+        (" ⚠️ carry risk!" if open_t else "") + chr(10) +
+        f"━━━━━━━━━━━━━━━━━━━━━━━━" + chr(10) +
+        f"<b>Trade Log:</b>" + chr(10) +
+        trades_block
+    )
     send(msg)
     logger.info("Daily summary sent for %s", trade_date)
 
@@ -165,19 +167,20 @@ def send_weekly_summary(equity_start: float, equity_end: float) -> None:
         for st, v in by_type.items()
     ) or "  None"
 
-    msg = f"""📈 *Weekly Summary — {week_start} to {week_end}*
-━━━━━━━━━━━━━━━━━━━━━━━━
-*Trades:*         {total} | {len(winners)}W / {total - len(winners)}L
-*Win Rate:*       {win_rate:.0f}%
-*Net P&L:*        ${gross_pnl:+.2f}
-*Avg Credit:*     ${avg_credit:.2f}
-*Avg Kept:*       ${avg_kept:.2f}
-*Account Growth:* {growth_pct:+.2f}%
-*Equity:*         ${equity_start:,.0f} → ${equity_end:,.0f}
-━━━━━━━━━━━━━━━━━━━━━━━━
-*By Setup Type:*
-{type_rows}"""
-
+    msg = (
+        f"📈 <b>Weekly Summary — {week_start} to {week_end}</b>" + chr(10) +
+        f"━━━━━━━━━━━━━━━━━━━━━━━━" + chr(10) +
+        f"Trades:       {total} | {len(winners)}W / {total - len(winners)}L" + chr(10) +
+        f"Win Rate:     {win_rate:.0f}%" + chr(10) +
+        f"Net P&L:      ${gross_pnl:+.2f}" + chr(10) +
+        f"Avg Credit:   ${avg_credit:.2f}" + chr(10) +
+        f"Avg Kept:     ${avg_kept:.2f}" + chr(10) +
+        f"Growth:       {growth_pct:+.2f}%" + chr(10) +
+        f"Equity:       ${equity_start:,.0f} → ${equity_end:,.0f}" + chr(10) +
+        f"━━━━━━━━━━━━━━━━━━━━━━━━" + chr(10) +
+        f"<b>By Setup Type:</b>" + chr(10) +
+        type_rows
+    )
     send(msg)
 
     # Persist weekly summary
@@ -338,27 +341,29 @@ class CommandHandler:
             self._cmd_status()
         elif cmd == "/pause":
             pause_trading("telegram command")
-            send("⏸ Trading *PAUSED* — no new entries until /resume")
+            send("⏸ Trading <b>PAUSED</b> — no new entries until /resume")
         elif cmd == "/resume":
             resume_trading()
-            send("▶️ Trading *RESUMED*")
+            send("▶️ Trading <b>RESUMED</b>")
         elif cmd == "/close_all":
             send("🚨 Closing all open positions now...")
             if hasattr(self.engine, "emergency_close_all"):
                 self.engine.emergency_close_all()
         elif cmd == "/help":
             send(
-                "📋 *Commands:*\n"
-                "/enter IC — enter Iron Condor\n"
-                "/enter IC A+ — enter IC grade A+\n"
-                "/status — open positions + P&L\n"
-                "/pause — halt new entries\n"
-                "/resume — re-enable entries\n"
-                "/close\\_all — emergency close all\n"
+            send(
+                "📋 <b>Commands:</b>" + chr(10) +
+                "/enter IC — enter Iron Condor" + chr(10) +
+                "/enter IC A+ — enter IC grade A+" + chr(10) +
+                "/status — open positions + P&L" + chr(10) +
+                "/pause — halt new entries" + chr(10) +
+                "/resume — re-enable entries" + chr(10) +
+                "/close_all — emergency close all" + chr(10) +
                 "/help — this menu"
             )
+            )
         else:
-            send(f"Unknown command: `{text}`\nTry /help")
+            send(f"Unknown command: {text}" + chr(10) + "Try /help")
 
     def _cmd_enter(self, text: str):
         """
@@ -406,8 +411,9 @@ class CommandHandler:
         vix               = get_vix() or 0.0
 
         send(
-            f"🔍 Processing `/enter {setup_type} {signal_grade}`\n"
-            f"VIX: {vix:.1f} | Open positions: {open_positions} | Equity: ${equity:,.0f}"
+            "🔍 Processing /enter " + setup_type + " " + signal_grade + chr(10) +
+            "VIX: " + str(round(vix,1)) + " | Open positions: " + str(open_positions) +
+            " | Equity: $" + f"{equity:,.0f}"
         )
 
         # Attempt entry
@@ -421,9 +427,9 @@ class CommandHandler:
         )
 
         if success:
-            send(f"✅ *Trade entered!*\n{msg}")
+            send("✅ <b>Trade entered!</b>" + chr(10) + msg)
         else:
-            send(f"🚫 *Entry blocked:*\n{msg}")
+            send("🚫 <b>Entry blocked:</b>" + chr(10) + msg)
 
     def _cmd_status(self):
         from datetime import datetime
@@ -436,7 +442,7 @@ class CommandHandler:
             send("📭 No open positions right now.")
             return
 
-        lines = [f"📋 *Open Positions ({len(open_spreads)})*"]
+        lines = [f"📋 <b>Open Positions ({len(open_spreads)})</b>"]
         for s in open_spreads:
             lines.append(
                 f"  • {s['setup_type']} | credit=${s['credit_received']:.2f} "
