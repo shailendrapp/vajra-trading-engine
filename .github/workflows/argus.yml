@@ -2,16 +2,31 @@ name: Vajra Trading Engine
 
 on:
   schedule:
-    # 6:25 AM PT weekdays
-    # PDT (summer): 13:25 UTC
-    # PST (winter): 14:25 UTC
-    - cron: '25 13 * * 1-5'
-    - cron: '25 14 * * 1-5'
+    - cron: '05 13 * * 1-5'   # 6:05 AM PDT startup (before 9:45 AM ET window)
+    - cron: '05 14 * * 1-5'   # 6:05 AM PST startup (before 9:45 AM ET window)
+    - cron: '15 14 * * 1-5'   # BIC window 1 EDT
+    - cron: '15 15 * * 1-5'   # BIC window 1 EST / window 2 EDT
+    - cron: '15 16 * * 1-5'   # BIC window 2 EST / window 3 EDT
+    - cron: '15 17 * * 1-5'   # BIC window 3 EST
+    - cron: '*/5 14-19 * * 1-5'  # monitor every 5min EDT
+    - cron: '*/5 15-20 * * 1-5'  # monitor every 5min EST
+    - cron: '35 19 * * 1-5'   # EOD close EDT
+    - cron: '35 20 * * 1-5'   # EOD close EST
 
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'Which phase to run'
+        required: true
+        default: 'bic_scan'
+        type: choice
+        options:
+          - startup
+          - bic_scan
+          - monitor
+          - eod_close
       dry_run:
-        description: 'Run in dry-run mode (no orders placed)'
+        description: 'Dry run (no orders placed)'
         required: false
         default: 'false'
         type: choice
@@ -19,35 +34,30 @@ on:
           - 'true'
           - 'false'
 
-# Prevent duplicate runs — keep active session alive
 concurrency:
   group: vajra-trading-engine
   cancel-in-progress: false
 
 jobs:
   run-vajra:
-    name: Vajra Trading Engine
+    name: Vajra [${{ github.event.inputs.mode || 'cron' }}]
     runs-on: ubuntu-latest
-    timeout-minutes: 420   # 7 hours — covers full 6:25 AM to 1:15 PM PT session
+    timeout-minutes: 15
 
     steps:
-      # ── 1. Checkout ─────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Python ───────────────────────────────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      # ── 3. Dependencies ─────────────────────────────────────────────────────
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── 4. Restore DB + FlashAlpha cache ────────────────────────────────────
-      - name: Restore database and caches
+      - name: Restore database
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -60,13 +70,34 @@ jobs:
         run: |
           mkdir -p data logs
           if [ -f data/trades.db ]; then
-            echo "✅ Database restored from previous run"
+            echo "✅ Database restored"
             ls -lh data/trades.db
           else
-            echo "ℹ️  No previous database — starting fresh"
+            echo "ℹ️  No previous database"
           fi
 
-      # ── 5. Validate ─────────────────────────────────────────────────────────
+      - name: Determine run mode
+        id: mode
+        run: |
+          INPUT_MODE="${{ github.event.inputs.mode }}"
+          if [ -n "$INPUT_MODE" ]; then
+            echo "mode=$INPUT_MODE" >> $GITHUB_OUTPUT
+            echo "▶ Manual — mode: $INPUT_MODE"
+          else
+            MINUTE=$(date -u +%M)
+            HOUR=$(date -u +%H)
+            if [ "$MINUTE" = "25" ]; then
+              echo "mode=startup" >> $GITHUB_OUTPUT
+            elif [ "$MINUTE" = "35" ]; then
+              echo "mode=eod_close" >> $GITHUB_OUTPUT
+            elif [ "$MINUTE" = "15" ]; then
+              echo "mode=bic_scan" >> $GITHUB_OUTPUT
+            else
+              echo "mode=monitor" >> $GITHUB_OUTPUT
+            fi
+            echo "▶ Cron mode: $(cat $GITHUB_OUTPUT | grep mode | cut -d= -f2) UTC ${HOUR}:${MINUTE}"
+          fi
+
       - name: Run system validation
         env:
           TRADIER_API_KEY:    ${{ secrets.TRADIER_API_KEY }}
@@ -78,8 +109,7 @@ jobs:
           ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
         run: python tests/validate.py
 
-      # ── 6. Run engine ───────────────────────────────────────────────────────
-      - name: Run Vajra Engine
+      - name: Run Vajra Engine — ${{ steps.mode.outputs.mode }}
         env:
           TRADIER_API_KEY:    ${{ secrets.TRADIER_API_KEY }}
           TRADIER_ACCOUNT_ID: ${{ secrets.TRADIER_ACCOUNT_ID }}
@@ -91,16 +121,17 @@ jobs:
           DB_PATH:            data/trades.db
           LOG_DIR:            logs/
         run: |
-          if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
-            echo "🔍 Running in DRY-RUN mode"
-            python engine.py --dry-run
+          MODE="${{ steps.mode.outputs.mode }}"
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "🔍 Dry run"
+            python engine.py --mode "$MODE" --dry-run
           else
-            echo "🚀 Running in PAPER trading mode"
-            python engine.py
+            echo "🚀 PAPER trading mode"
+            python engine.py --mode "$MODE"
           fi
 
-      # ── 7. Save DB + FlashAlpha cache ────────────────────────────────────────
-      - name: Save database and caches for next run
+      - name: Save database
         if: always()
         uses: actions/cache/save@v4
         with:
@@ -109,13 +140,10 @@ jobs:
             data/flashalpha_cache.json
           key: argus-trades-db
 
-      # ── 8. Upload logs ───────────────────────────────────────────────────────
       - name: Upload logs
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: vajra-logs-${{ github.run_id }}
-          path: |
-            logs/
-            data/trades.db
-          retention-days: 30
+          path: logs/
+          retention-days: 7
