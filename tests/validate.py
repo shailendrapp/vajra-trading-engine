@@ -78,7 +78,7 @@ check("BIC VIX floor = 12",            BIC_VIX_FLOOR == 12.0)
 check("BIC delta target = 0.09",       BIC_SHORT_DELTA_TARGET == 0.09)
 check("BIC min credit = $0.50",        BIC_MIN_CREDIT == 0.50)
 check("BIC wing tiers defined",        len(BIC_WING_TIERS) == 3)
-check("BIC entry windows defined",     len(BIC_ENTRY_WINDOWS_ET) == 5)
+check("BIC entry windows defined",     len(BIC_ENTRY_WINDOWS_ET) == 6)
 # Check env vars directly from os.environ (not config) to catch GitHub Actions secrets
 check("TRADIER_API_KEY set",           len(os.environ.get("TRADIER_API_KEY","")) > 0,    "add to .env or GitHub Secrets")
 check("FLASHALPHA_API_KEY set",        len(os.environ.get("FLASHALPHA_API_KEY","")) > 0, "add to .env or GitHub Secrets")
