@@ -372,6 +372,6 @@ def get_client() -> FlashAlphaClient:
     return _client
 
 
-def get_spx_summary() -> Optional[SPXSummary]:
+def get_spx_summary(force: bool = False) -> Optional[SPXSummary]:
     """Convenience function for bic_scanner.py."""
-    return get_client().get_spx_summary()
+    return get_client().get_spx_summary(force=force)
