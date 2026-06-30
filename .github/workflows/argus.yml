@@ -4,8 +4,11 @@ on:
   schedule:
     # Single long-running job — engine handles all windows internally
     # Start 6:05 AM PT (40min before 9:45 AM ET first BIC window)
-    - cron: '05 13 * * 1-5'   # 6:05 AM PDT (summer)
-    - cron: '05 14 * * 1-5'   # 6:05 AM PST (winter)
+    # PDT (summer, Mar-Nov): UTC-7 → 6:05 AM PT = 13:05 UTC
+    # PST (winter, Nov-Mar): UTC-8 → 6:05 AM PT = 14:05 UTC
+    # Only ONE cron active at a time — comment out the other season
+    - cron: '05 13 * * 1-5'   # ← ACTIVE: 6:05 AM PDT (summer — now through Nov 2)
+    # - cron: '05 14 * * 1-5' # ← INACTIVE: 6:05 AM PST (re-enable Nov 2)
 
   workflow_dispatch:
     inputs:
