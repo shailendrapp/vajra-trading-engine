@@ -690,6 +690,29 @@ def run_bic_scan(
     # force=True ensures one fresh API call per 60-min window (5 calls/day)
     # MIN_FORCE_INTERVAL (10 min) prevents burst on simultaneous window fires
     summary    = get_spx_summary(force=True)
+
+    # ── FlashAlpha fallback gate ──────────────────────────────────────────────
+    # If FlashAlpha is unavailable AND VIX >= 18 → skip entry.
+    # At VIX >= 18 without regime confirmation we cannot distinguish
+    # positive from negative gamma. Negative gamma + VIX >= 18 is a skip
+    # condition — trading blind risks entering on the wrong side.
+    # Backtest: blocks ~44 days/year, saves 8 breaches, -12.8pp max drawdown.
+    # At VIX < 18 → allow entry with delta+VIX fallback (lower risk days).
+    if summary is None and vix >= 18.0:
+        reason = (
+            "FlashAlpha unavailable + VIX %.1f >= 18 — "
+            "cannot verify regime, skipping to avoid negative gamma risk" % vix
+        )
+        logger.warning("BIC blocked: %s", reason)
+        now_pt = _now_pt(); now_et = _now_et()
+        time_str = now_pt.strftime("%H:%M") + " PT / " + now_et.strftime("%H:%M") + " ET"
+        send(
+            "⛔ BIC SKIP #" + str(entry_num) + "  --  " + time_str + chr(10) +
+            "SPX " + str(round(spx, 2)) + "  |  VIX " + str(round(vix, 1)) + chr(10) +
+            "Reason: FlashAlpha down + VIX ≥ 18 — regime unknown"
+        )
+        return {"status": "blocked", "reason": "flashalpha_down_vix_elevated"}
+
     gex_regime = "⚪ UNKNOWN"
     if summary:
         if summary.regime == "positive_gamma":
