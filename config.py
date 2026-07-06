@@ -113,6 +113,8 @@ ENTRY_WINDOWS_ET = [
 # POLLING
 # ─────────────────────────────────────────────
 POLL_INTERVAL_SECONDS    = 45
+MIN_WINDOW_GAP_MINUTES   = 30    # minimum minutes between BIC entries
+                                  # prevents identical ICs on late-start cascade
 MARKET_OPEN_PT           = "06:30"
 MARKET_CLOSE_PT          = "13:15"
 
