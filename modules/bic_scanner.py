@@ -116,7 +116,23 @@ def bic_entry_allowed(
     if len(open_spreads) >= 3:
         return False, f"Max 3 concurrent positions already open"
 
+    # Build existing strike sets for duplicate check (used in run_bic_scan)
     return True, "Gates passed"
+
+
+def _get_existing_strikes() -> tuple:
+    """Returns (short_put_strikes, short_call_strikes) currently open."""
+    from core.database import get_legs_for_spread
+    open_spreads    = get_open_spreads(_today())
+    short_puts  = set()
+    short_calls = set()
+    for spread in open_spreads:
+        for leg in get_legs_for_spread(spread["id"]):
+            if leg["leg_type"] == "SHORT_PUT":
+                short_puts.add(float(leg["strike"]))
+            elif leg["leg_type"] == "SHORT_CALL":
+                short_calls.add(float(leg["strike"]))
+    return short_puts, short_calls
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -803,6 +819,42 @@ def run_bic_scan(
     # ── Expected move validation ──────────────────────────────────────────────
     # Short strikes must be at least 80% of expected move away from SPX
     # Prevents entering ICs where strikes are inside the expected move
+    # ── Duplicate strike gate ────────────────────────────────────────────────
+    existing_short_puts, existing_short_calls = _get_existing_strikes()
+    if strikes and (existing_short_puts or existing_short_calls):
+        proposed_put  = float(strikes["short_put"]["strike"])
+        proposed_call = float(strikes["short_call"]["strike"])
+        if proposed_put in existing_short_puts:
+            reason = (
+                "Duplicate short put %.0f already open — "
+                "concentration risk (late-start cascade prevention)" % proposed_put
+            )
+            logger.warning("BIC blocked: %s", reason)
+            now_pt = _now_pt(); now_et = _now_et()
+            time_str = now_pt.strftime("%H:%M") + " PT / " + now_et.strftime("%H:%M") + " ET"
+            send(
+                "⛔ BIC SKIP #" + str(entry_num) + "  --  " + time_str + chr(10) +
+                "SPX " + str(round(spx, 2)) + chr(10) +
+                "Reason: Duplicate short put " + str(round(proposed_put, 0)) +
+                " already open"
+            )
+            return {"status": "blocked", "reason": "duplicate_strike"}
+        if proposed_call in existing_short_calls:
+            reason = (
+                "Duplicate short call %.0f already open — "
+                "concentration risk (late-start cascade prevention)" % proposed_call
+            )
+            logger.warning("BIC blocked: %s", reason)
+            now_pt = _now_pt(); now_et = _now_et()
+            time_str = now_pt.strftime("%H:%M") + " PT / " + now_et.strftime("%H:%M") + " ET"
+            send(
+                "⛔ BIC SKIP #" + str(entry_num) + "  --  " + time_str + chr(10) +
+                "SPX " + str(round(spx, 2)) + chr(10) +
+                "Reason: Duplicate short call " + str(round(proposed_call, 0)) +
+                " already open"
+            )
+            return {"status": "blocked", "reason": "duplicate_strike"}
+
     if summary and summary.expected_move > 0 and strikes:
         # Time-adjusted EM — shrinks through the day as expiry approaches
         # 10:15 AM: ~94% of full EM remaining
