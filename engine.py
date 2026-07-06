@@ -35,6 +35,7 @@ import pytz
 
 from config import (
     POLL_INTERVAL_SECONDS, MARKET_OPEN_PT, MARKET_CLOSE_PT,
+    MIN_WINDOW_GAP_MINUTES,
     DAILY_SUMMARY_TIME_PT, WEEKLY_SUMMARY_DAY, STARTING_ACCOUNT_EQUITY,
     NEWS_DAY_SYMBOLS, LOG_DIR, FOMC_EXIT_TIME_PT,
 )
@@ -141,6 +142,7 @@ class Engine:
         self._bic_windows_fired: set = set()   # track which BIC windows fired today
         self._bic_entry_count: int = 0          # entries taken today
         self._consecutive_rejections: int = 0   # consecutive order rejections
+        self._last_entry_time: float = 0.0          # epoch time of last BIC entry
         self.account_equity   = STARTING_ACCOUNT_EQUITY
         self.daily_state: dict = {}
         self.news_days: set   = set()
@@ -240,6 +242,18 @@ class Engine:
             if now_et_hhmm >= window_et and window_et not in self._bic_windows_fired:
                 self._bic_windows_fired.add(window_et)
                 if not self.dry_run and not is_paused():
+                    # Gap check — prevent identical ICs on late-start cascade
+                    import time as _time
+                    mins_since_last = (_time.time() - self._last_entry_time) / 60
+                    if (self._last_entry_time > 0 and
+                            mins_since_last < MIN_WINDOW_GAP_MINUTES):
+                        logger.warning(
+                            "BIC window %s ET skipped — last entry was %.1f min ago "
+                            "(min gap=%d min). Late-start cascade prevention.",
+                            window_et, mins_since_last, MIN_WINDOW_GAP_MINUTES
+                        )
+                        self._bic_windows_fired.add(window_et)
+                        continue
                     self._bic_entry_count += 1
                     logger.info("BIC window %s ET fired — running scan #%d",
                                 window_et, self._bic_entry_count)
@@ -251,6 +265,7 @@ class Engine:
                     )
                     if result.get("status") == "entered":
                         self._consecutive_rejections = 0   # reset on success
+                        self._last_entry_time = _time.time()  # track for gap check
                         logger.info("BIC #%d entered: order=%s credit=%.2f",
                                     self._bic_entry_count,
                                     result.get("order_id"),
