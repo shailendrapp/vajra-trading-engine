@@ -34,6 +34,7 @@ from config import (
     BIC_ENTRY_WINDOWS_ET, BIC_NEWS_EVENTS,
     BIC_ADAPTIVE_DELTA, BIC_CREDIT_VIX_TIERS,
     BIC_EM_MULT, BIC_TRADING_HOURS, BIC_USE_TIME_ADJ_EM,
+    BIC_CALL_WALL_BUFFER, BIC_PUT_WALL_BUFFER,
     VIX_KILL_SWITCH, IC_CONTRACTS, SPREAD_WIDTH_PTS,
     ANTHROPIC_API_KEY,
 )
@@ -819,6 +820,76 @@ def run_bic_scan(
     # ── Expected move validation ──────────────────────────────────────────────
     # Short strikes must be at least 80% of expected move away from SPX
     # Prevents entering ICs where strikes are inside the expected move
+
+    # ── Call/Put wall placement check ────────────────────────────────────────
+    # Short call must be ABOVE the call wall (not below it).
+    # GEX call walls act as resistance — dealers short gamma above the wall.
+    # Placing short call BELOW the wall = entering into dealer resistance zone.
+    # Today's failure: call_wall=7550, short_call=7545 (5pts below) → breach.
+    if summary and summary.call_wall > 0 and strikes:
+        sc_strike = float(strikes["short_call"]["strike"])
+        sp_strike = float(strikes["short_put"]["strike"])
+
+        # Short call must be at or above call wall + buffer
+        em_pts = summary.expected_move  # full-day EM in points
+        wall_nearby_mult = 1.5
+
+        # Block if short call is BELOW the call wall AND wall is nearby
+        # "Nearby" = call wall is within 1.5× expected move above SPX
+        # Prevents entering into GEX resistance zone on trending days
+        call_wall_gap  = summary.call_wall - spx
+        call_wall_near = call_wall_gap < (wall_nearby_mult * em_pts)
+        if sc_strike < summary.call_wall and call_wall_near:
+            reason = (
+                "Short call %.0f is below call wall %.0f "
+                "(wall gap=%.0fpts < 1.5×EM=%.0fpts) — GEX resistance zone" % (
+                    sc_strike, summary.call_wall,
+                    call_wall_gap, wall_nearby_mult * em_pts
+                )
+            )
+            logger.warning("BIC blocked: %s", reason)
+            now_pt = _now_pt(); now_et = _now_et()
+            time_str = now_pt.strftime("%H:%M") + " PT / " + now_et.strftime("%H:%M") + " ET"
+            send(
+                "⛔ BIC SKIP #" + str(entry_num) + "  --  " + time_str + chr(10) +
+                "SPX " + str(round(spx, 2)) + "  |  Call wall " +
+                str(round(summary.call_wall, 0)) + chr(10) +
+                "Reason: Short call " + str(round(sc_strike, 0)) +
+                " below nearby call wall — GEX resistance zone"
+            )
+            return {"status": "blocked", "reason": "call_below_wall"}
+
+        # Block if short put is ABOVE the put wall AND wall is nearby
+        put_wall_gap  = spx - summary.put_wall if summary.put_wall > 0 else 999
+        put_wall_near = put_wall_gap < (wall_nearby_mult * em_pts)
+        if (summary.put_wall > 0 and
+                sp_strike > summary.put_wall and put_wall_near):
+            reason = (
+                "Short put %.0f is above put wall %.0f "
+                "(wall gap=%.0fpts < 1.5×EM=%.0fpts) — GEX support zone" % (
+                    sp_strike, summary.put_wall,
+                    put_wall_gap, wall_nearby_mult * em_pts
+                )
+            )
+            logger.warning("BIC blocked: %s", reason)
+            now_pt = _now_pt(); now_et = _now_et()
+            time_str = now_pt.strftime("%H:%M") + " PT / " + now_et.strftime("%H:%M") + " ET"
+            send(
+                "⛔ BIC SKIP #" + str(entry_num) + "  --  " + time_str + chr(10) +
+                "SPX " + str(round(spx, 2)) + "  |  Put wall " +
+                str(round(summary.put_wall, 0)) + chr(10) +
+                "Reason: Short put " + str(round(sp_strike, 0)) +
+                " above nearby put wall — GEX support zone"
+            )
+            return {"status": "blocked", "reason": "put_above_wall"}
+
+        logger.info(
+            "Wall check passed: call %.0f vs wall %.0f (gap=%.0f)  "
+            "put %.0f vs wall %.0f (gap=%.0f)",
+            sc_strike, summary.call_wall, call_wall_gap,
+            sp_strike, summary.put_wall, put_wall_gap
+        )
+
     # ── Duplicate strike gate ────────────────────────────────────────────────
     existing_short_puts, existing_short_calls = _get_existing_strikes()
     if strikes and (existing_short_puts or existing_short_calls):
