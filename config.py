@@ -177,6 +177,9 @@ BIC_CREDIT_VIX_TIERS = [
     (30.0, 1.00),   # VIX 20-30 → min credit $1.00
 ]
 BIC_VIX_FLOOR          = 12.0   # skip if VIX < 12 (credit too thin)
+BIC_CALL_WALL_BUFFER   = 5      # short call must be >= this many pts ABOVE call wall
+                                  # prevents placing short call below GEX resistance
+BIC_PUT_WALL_BUFFER    = 5      # short put must be >= this many pts BELOW put wall
 
 # BIC scan schedule — entry windows (ET)
 # System scans at these times and auto-enters if conditions met
