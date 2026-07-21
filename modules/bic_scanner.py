@@ -544,6 +544,169 @@ def size_contracts(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# IRON FLY SCANNER (VIX < VIX_MODE_THRESHOLD)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_iron_fly_scan(entry_num: int, daily_state: dict,
+                      account_equity: float, is_news_day: bool) -> dict:
+    """
+    Iron Fly mode — used when VIX < VIX_MODE_THRESHOLD (default 20).
+
+    Structure: Sell ATM call + ATM put at SAME strike, buy wings FLY_WING_WIDTH pts away.
+    Collects 10-20x more premium than OTM IC at same VIX level.
+    Profit exit: 50% of credit. Loss stop: 50% of credit lost.
+    Uses LIMIT orders at mid-price — no slippage.
+    """
+    import datetime as _dt, uuid as _uuid
+    from config import (
+        VIX_MODE_THRESHOLD, FLY_WING_WIDTH,
+        FLY_MIN_CREDIT, FLY_PROFIT_TARGET, FLY_LOSS_STOP,
+    )
+    from core.tradier import get_spx_price, get_vix, get_option_chain, place_spread_order
+    from core.database import get_open_spreads, insert_spread, insert_leg
+    from core.flashalpha import get_spx_summary
+
+    now_pt = _now_pt(); now_et = _now_et()
+    time_str = now_pt.strftime("%H:%M") + " PT / " + now_et.strftime("%H:%M") + " ET"
+
+    spx = get_spx_price()
+    vix = get_vix()
+    if not spx or not vix:
+        return {"status": "error", "reason": "no_market_data"}
+
+    logger.info("=== IRON FLY SCAN #%d === SPX=%.2f VIX=%.1f", entry_num, spx, vix)
+
+    # Mode check — if VIX rose above threshold, defer to BIC
+    if vix >= VIX_MODE_THRESHOLD:
+        logger.info("Iron Fly: VIX %.1f >= %.0f → deferring to BIC mode",
+                    vix, VIX_MODE_THRESHOLD)
+        return {"status": "mode_switch", "reason": "vix_above_threshold"}
+
+    if is_news_day:
+        return {"status": "blocked", "reason": "news_day"}
+
+    # Max positions
+    if len(get_open_spreads(_today())) >= 3:
+        return {"status": "blocked", "reason": "max_positions"}
+
+    # FlashAlpha regime
+    summary = get_spx_summary(force=True)
+    if summary is None and vix >= 18.0:
+        logger.warning("Iron Fly blocked: FlashAlpha down + VIX %.1f >= 18", vix)
+        send("⛔ FLY SKIP #" + str(entry_num) + "  --  " + time_str + chr(10) +
+             "FlashAlpha down + VIX " + str(round(vix, 1)) + " ≥ 18")
+        return {"status": "blocked", "reason": "flashalpha_down_vix_elevated"}
+
+    if summary and not summary.go_signal:
+        logger.info("Iron Fly blocked: go=False regime=%s", summary.regime)
+        send("⛔ FLY SKIP #" + str(entry_num) + "  --  " + time_str + chr(10) +
+             "SPX " + str(round(spx, 2)) + "  regime=" + str(summary.regime) +
+             " go=False")
+        return {"status": "blocked", "reason": "no_go_signal"}
+
+    if summary:
+        logger.info("FlashAlpha: regime=%s go=%s wall=%.0f/%.0f",
+                    summary.regime, summary.go_signal,
+                    summary.call_wall, summary.put_wall)
+
+    # ATM strike selection
+    atm = round(spx / 5) * 5
+    call_short = put_short = atm
+    call_long  = atm + FLY_WING_WIDTH
+    put_long   = atm - FLY_WING_WIDTH
+
+    logger.info("Iron Fly strikes: ATM=%d wings C%d/P%d", atm, call_long, put_long)
+
+    # Get chain and compute mid-price credit
+    expiry = _dt.date.today().strftime("%Y-%m-%d")
+    chain  = get_option_chain(expiry)
+    if not chain:
+        return {"status": "error", "reason": "no_chain"}
+
+    def mid(strike, ot):
+        for o in chain:
+            if abs(o["strike"] - strike) < 0.01 and o["type"] == ot:
+                b = float(o.get("bid") or 0)
+                a = float(o.get("ask") or 0)
+                return round((b+a)/2, 2) if a > 0 else b
+        return 0.0
+
+    total_credit = round(
+        (mid(call_short,"call") + mid(put_short,"put")) -
+        (mid(call_long, "call") + mid(put_long, "put")), 2
+    )
+    logger.info("Iron Fly credit: $%.2f (min $%.2f)", total_credit, FLY_MIN_CREDIT)
+
+    if total_credit < FLY_MIN_CREDIT:
+        send("⛔ FLY SKIP #" + str(entry_num) + "  --  " + time_str + chr(10) +
+             "Credit $" + str(total_credit) + " < min $" + str(FLY_MIN_CREDIT))
+        return {"status": "blocked", "reason": "credit_too_thin"}
+
+    # Build option symbols
+    def sym(strike, call_put):
+        d = expiry.replace("-","")
+        return f"SPXW{d}{call_put}{int(strike*1000):08d}000"
+
+    order_legs = [
+        {"symbol": sym(call_short,"C"), "side": "sell_to_open", "quantity": 1},
+        {"symbol": sym(put_short, "P"), "side": "sell_to_open", "quantity": 1},
+        {"symbol": sym(call_long, "C"), "side": "buy_to_open",  "quantity": 1},
+        {"symbol": sym(put_long,  "P"), "side": "buy_to_open",  "quantity": 1},
+    ]
+
+    # LIMIT ORDER at mid-price — no market order slippage
+    order    = place_spread_order(order_legs, order_type="limit",
+                                  limit_price=total_credit)
+    order_id = order.get("id") if order else None
+
+    if order and order.get("_rejected"):
+        send("🚨 FLY REJECTED #" + str(entry_num) + "  --  " + time_str + chr(10) +
+             str(order.get("_reject_reason","Unknown")))
+        return {"status": "order_rejected"}
+
+    if not order_id:
+        return {"status": "order_failed"}
+
+    # Persist to DB
+    spread_id = str(_uuid.uuid4())
+    insert_spread({
+        "id": spread_id, "trade_date": _today(),
+        "entry_time": now_et.strftime("%H:%M"),
+        "strategy": "IRON_FLY", "contracts": 1,
+        "credit_received": total_credit,
+        "tradier_order_id": str(order_id),
+        "status": "open", "wing_width": FLY_WING_WIDTH,
+        "spx_at_entry": round(spx,2), "vix_at_entry": round(vix,1),
+    })
+    for lt, st, sd in [
+        ("SHORT_CALL",call_short,"sell"),("SHORT_PUT",put_short,"sell"),
+        ("LONG_CALL", call_long, "buy"), ("LONG_PUT",  put_long, "buy"),
+    ]:
+        insert_leg({"id": str(_uuid.uuid4()), "spread_id": spread_id,
+                    "leg_type": lt, "strike": st, "expiry": expiry,
+                    "option_symbol": sym(st,"C" if "CALL" in lt else "P"),
+                    "side": sd})
+
+    # Telegram
+    profit_target = round(total_credit * (1 - FLY_PROFIT_TARGET), 2)
+    loss_stop     = round(total_credit * (1 + FLY_LOSS_STOP),     2)
+    send(
+        "🦋 IRON FLY #" + str(entry_num) + "  --  " + time_str + chr(10) +
+        "SPX " + str(round(spx,2)) + "  |  VIX " + str(round(vix,1)) + chr(10) +
+        "ATM strike: " + str(int(atm)) + "  Wing: ±" + str(FLY_WING_WIDTH) + "pt" + chr(10) +
+        "Credit: $" + str(total_credit) + chr(10) +
+        "→ Take profit at debit $" + str(profit_target) + chr(10) +
+        "→ Stop loss at debit $"   + str(loss_stop)
+    )
+    logger.info("Iron Fly #%d entered: ATM=%d credit=%.2f order=%s",
+                entry_num, atm, total_credit, order_id)
+
+    return {"status": "entered", "strategy": "IRON_FLY",
+            "order_id": order_id, "credit": total_credit,
+            "atm_strike": atm, "spread_id": spread_id}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN SCAN + EXECUTE
 # ─────────────────────────────────────────────────────────────────────────────
 
