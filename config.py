@@ -113,6 +113,22 @@ ENTRY_WINDOWS_ET = [
 # POLLING
 # ─────────────────────────────────────────────
 POLL_INTERVAL_SECONDS    = 45
+
+# ── Dual-mode engine ──────────────────────────────────────────────────────────
+# VIX < threshold → Iron Fly mode (ATM straddle + wings)
+# VIX >= threshold → Breakeven IC mode (OTM spreads + per-side stops)
+VIX_MODE_THRESHOLD       = 20.0
+
+# Iron Fly config (VIX < 20)
+FLY_WING_WIDTH           = 50      # pts each side from ATM strike
+FLY_PROFIT_TARGET        = 0.50    # close at 50% of credit collected
+FLY_LOSS_STOP            = 0.50    # close when 50% of credit lost
+FLY_MIN_CREDIT           = 5.00    # min $5 total credit to enter fly
+FLY_EOD_CLOSE_MINS       = 60      # close fly 60 min before hard close (avoid gamma death zone)
+
+# Breakeven IC config (VIX >= 20)
+BIC_SIDE_STOP_MULT       = 1.00    # close ONE side when that side debit = 1× total IC credit
+BIC_MIN_CREDIT_BEIC      = 1.50    # min credit for Breakeven IC mode
 MIN_WINDOW_GAP_MINUTES   = 30    # minimum minutes between BIC entries
                                   # prevents identical ICs on late-start cascade
 MARKET_OPEN_PT           = "06:30"
