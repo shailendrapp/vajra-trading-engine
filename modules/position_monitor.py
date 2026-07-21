@@ -22,6 +22,7 @@ from config import (
     IC_CONTRACTS, IC_CONTRACT_1_TARGET, IC_CONTRACT_2_TARGET,
     BREACH_DELTA_THRESHOLD, BREACH_PNL_MULTIPLIER,
     HARD_CLOSE_TIME_PT, FOMC_EXIT_TIME_PT,
+    FLY_PROFIT_TARGET, FLY_LOSS_STOP, BIC_SIDE_STOP_MULT,
 )
 from core.database import (
     get_open_spreads, get_legs_for_spread, close_spread,
@@ -208,23 +209,67 @@ def monitor_tick(daily_state: Dict, account_equity: float) -> Dict:
     quotes = get_multi_option_quotes(list(set(all_symbols)))
 
     for spread in open_spreads:
-        sid  = spread["id"]
-        legs = all_legs.get(sid, [])
+        sid      = spread["id"]
+        legs     = all_legs.get(sid, [])
+        strategy = spread.get("strategy", "IRON_CONDOR")
         if not legs:
             continue
 
         pnl_data        = calc_spread_pnl(spread, legs, quotes)
         credit_received = pnl_data["credit_received"]
+        net_debit       = pnl_data["net_debit"]
         pnl_pct         = pnl_data["pnl_pct"]
         tier            = json.loads(spread.get("tier_assignment") or "{}")
 
-        insert_snapshot(sid, pnl_data["net_debit"], pnl_pct,
+        insert_snapshot(sid, net_debit, pnl_pct,
                         pnl_data["short_leg_delta"], vix,
                         {"hard_close": hard_close})
+
+        # ── IRON FLY: symmetric 50% profit / 50% loss stops ──────────────────
+        if strategy == "IRON_FLY":
+            profit_debit = round(credit_received * (1 - FLY_PROFIT_TARGET), 2)
+            loss_debit   = round(credit_received * (1 + FLY_LOSS_STOP),     2)
+
+            if net_debit <= profit_debit:
+                logger.info(
+                    "🦋 Fly %s PROFIT TARGET: debit=%.2f ≤ %.2f → closing",
+                    sid[:8], net_debit, profit_debit
+                )
+                pnl = close_spread(sid, net_debit, "FLY_PROFIT_50PCT", credit_received)
+                _place_close_all_legs(legs, spread["contracts"])
+                now_pt = _now_pt()
+                send(
+                    "✅ FLY PROFIT 50%  --  " + now_pt.strftime("%H:%M") + " PT" + chr(10) +
+                    "Credit: $" + str(credit_received) + "  Close: $" + str(net_debit) + chr(10) +
+                    "P&L: $" + str(round((credit_received - net_debit) * 100, 2))
+                )
+                daily_state = update_daily_pnl(trade_date, daily_state, pnl)
+                continue
+
+            if net_debit >= loss_debit or hard_close:
+                reason = "FLY_LOSS_STOP" if net_debit >= loss_debit else close_reason
+                logger.info(
+                    "🦋 Fly %s %s: debit=%.2f → closing",
+                    sid[:8], reason, net_debit
+                )
+                pnl = close_spread(sid, net_debit, reason, credit_received)
+                _place_close_all_legs(legs, spread["contracts"])
+                now_pt = _now_pt()
+                send(
+                    "⛔ FLY " + reason + "  --  " + now_pt.strftime("%H:%M") + " PT" + chr(10) +
+                    "Credit: $" + str(credit_received) + "  Close: $" + str(net_debit) + chr(10) +
+                    "P&L: $" + str(round((credit_received - net_debit) * 100, 2))
+                )
+                daily_state = update_daily_pnl(trade_date, daily_state, pnl)
+            continue  # Iron Fly handled — skip standard IC logic below
 
         # ── HARD CLOSE — 12:30 PM PT, close everything remaining ────────────
         if hard_close:
             close_reason = "FOMC_EXIT" if fomc_exit and not _is_hard_close_time() else "HARD_CLOSE"
+
+        # ── Strategy-aware position monitoring ────────────────────────────────
+        # Iron Fly: symmetric 50/50 profit/loss stops on total position
+        # Breakeven IC: per-side stops, keep winning side when one side stopped
             remaining = (
                 (tier.get("tier1_contracts", 0) if not tier.get("tier1_closed") else 0) +
                 (tier.get("tier2_contracts", 0) if not tier.get("tier2_closed") else 0) +
