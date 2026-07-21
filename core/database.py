@@ -31,21 +31,26 @@ def init_db() -> None:
         conn.executescript("""
         -- ── SPREADS ──────────────────────────────────────────────────────────
         CREATE TABLE IF NOT EXISTS spreads (
-            id              TEXT PRIMARY KEY,          -- uuid4
-            trade_date      TEXT NOT NULL,             -- YYYY-MM-DD
-            setup_type      TEXT NOT NULL,             -- IC | BEAR_CALL | BULL_PUT
-            signal_grade    TEXT NOT NULL,             -- A+ | A
-            entry_time      TEXT NOT NULL,             -- ISO datetime
-            credit_received REAL NOT NULL,             -- total credit per spread ($)
-            spread_width    INTEGER NOT NULL,          -- points
-            contracts       INTEGER NOT NULL,
-            status          TEXT NOT NULL DEFAULT 'OPEN',  -- OPEN | CLOSED | BREACHED
-            close_time      TEXT,
-            close_debit     REAL,                      -- cost to close per spread
-            realized_pnl    REAL,                      -- positive = profit
-            close_reason    TEXT,                      -- TIER1|TIER2|FREE_RUNNER|BREACH_DELTA|BREACH_PNL|HARD_CLOSE|CIRCUIT_BREAKER
-            tier_assignment TEXT,                      -- JSON: {tier: contracts}
-            notes           TEXT
+            id                TEXT PRIMARY KEY,          -- uuid4
+            trade_date        TEXT NOT NULL,             -- YYYY-MM-DD
+            strategy          TEXT DEFAULT 'IRON_CONDOR',-- IRON_CONDOR | IRON_FLY
+            setup_type        TEXT,                      -- IC | BEAR_CALL | BULL_PUT
+            signal_grade      TEXT,                      -- A+ | A
+            entry_time        TEXT NOT NULL,             -- ISO datetime
+            credit_received   REAL NOT NULL,             -- total credit per spread ($)
+            spread_width      INTEGER,                   -- points (OTM spread width)
+            wing_width        INTEGER,                   -- points (fly wing width)
+            contracts         INTEGER NOT NULL,
+            spx_at_entry      REAL,                      -- SPX price at entry
+            vix_at_entry      REAL,                      -- VIX at entry
+            tradier_order_id  TEXT,                      -- Tradier order ID
+            status            TEXT NOT NULL DEFAULT 'OPEN',  -- OPEN | CLOSED | BREACHED
+            close_time        TEXT,
+            close_debit       REAL,                      -- cost to close per spread
+            realized_pnl      REAL,                      -- positive = profit
+            close_reason      TEXT,                      -- TIER1|TIER2|FREE_RUNNER|BREACH_DELTA|BREACH_PNL|HARD_CLOSE|CIRCUIT_BREAKER|FLY_PROFIT_50PCT|FLY_LOSS_STOP
+            tier_assignment   TEXT,                      -- JSON: {tier: contracts}
+            notes             TEXT
         );
 
         -- ── LEGS ─────────────────────────────────────────────────────────────
