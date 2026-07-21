@@ -35,14 +35,14 @@ import pytz
 
 from config import (
     POLL_INTERVAL_SECONDS, MARKET_OPEN_PT, MARKET_CLOSE_PT,
-    MIN_WINDOW_GAP_MINUTES,
+    MIN_WINDOW_GAP_MINUTES, VIX_MODE_THRESHOLD,
     DAILY_SUMMARY_TIME_PT, WEEKLY_SUMMARY_DAY, STARTING_ACCOUNT_EQUITY,
     NEWS_DAY_SYMBOLS, LOG_DIR, FOMC_EXIT_TIME_PT,
 )
 from core.database import init_db, get_or_create_daily_state, update_daily_state
 from core.tradier import get_account_balance, get_vix
 from modules.position_monitor import monitor_tick
-from modules.bic_scanner import run_bic_scan
+from modules.bic_scanner import run_bic_scan, run_iron_fly_scan
 from modules.telegram_bot import (
     send, send_daily_summary, send_weekly_summary,
     CommandHandler, is_paused, pause_trading
@@ -255,14 +255,42 @@ class Engine:
                         self._bic_windows_fired.add(window_et)
                         continue
                     self._bic_entry_count += 1
-                    logger.info("BIC window %s ET fired — running scan #%d",
-                                window_et, self._bic_entry_count)
-                    result = run_bic_scan(
-                        entry_num      = self._bic_entry_count,
-                        daily_state    = self.daily_state,
-                        account_equity = self.account_equity,
-                        is_news_day    = is_news_day,
-                    )
+                    # Route to correct scanner based on VIX
+                    from core.tradier import get_vix as _get_vix
+                    current_vix = _get_vix() or 99.0
+                    if current_vix < VIX_MODE_THRESHOLD:
+                        logger.info(
+                            "VIX %.1f < %.0f → IRON FLY mode (window %s ET scan #%d)",
+                            current_vix, VIX_MODE_THRESHOLD,
+                            window_et, self._bic_entry_count
+                        )
+                        result = run_iron_fly_scan(
+                            entry_num      = self._bic_entry_count,
+                            daily_state    = self.daily_state,
+                            account_equity = self.account_equity,
+                            is_news_day    = is_news_day,
+                        )
+                        # If mode_switch returned, fall through to BIC
+                        if result.get("status") == "mode_switch":
+                            logger.info("Iron Fly deferred to BIC — running BIC scan")
+                            result = run_bic_scan(
+                                entry_num      = self._bic_entry_count,
+                                daily_state    = self.daily_state,
+                                account_equity = self.account_equity,
+                                is_news_day    = is_news_day,
+                            )
+                    else:
+                        logger.info(
+                            "VIX %.1f >= %.0f → BREAKEVEN IC mode (window %s ET scan #%d)",
+                            current_vix, VIX_MODE_THRESHOLD,
+                            window_et, self._bic_entry_count
+                        )
+                        result = run_bic_scan(
+                            entry_num      = self._bic_entry_count,
+                            daily_state    = self.daily_state,
+                            account_equity = self.account_equity,
+                            is_news_day    = is_news_day,
+                        )
                     if result.get("status") == "entered":
                         self._consecutive_rejections = 0   # reset on success
                         self._last_entry_time = _time.time()  # track for gap check
